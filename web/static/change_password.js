@@ -1,0 +1,424 @@
+/* gpt_signup_hybrid - Change Password tab logic */
+(() => {
+  'use strict';
+
+  const LS_INPUT = 'gpt_reg.input.change_password';
+  const MODE_TO_CONCURRENCY = {
+    single: 1,
+    multi: 2,
+    multi3: 3,
+    multi5: 5,
+    multi10: 10,
+    multi20: 20,
+    multi30: 30,
+    multi50: 50,
+    multi100: 100,
+    multi200: 200,
+  };
+
+  const state = {
+    jobs: new Map(),
+    order: [],
+    activeJobId: null,
+  };
+  const detailCache = new Map();
+
+  const $ = (id) => document.getElementById(id);
+  const dom = {
+    comboInput: $('chpwd-combo-input'),
+    newPassword: $('chpwd-new-password'),
+    mode: $('chpwd-mode'),
+    jobTimeout: $('chpwd-job-timeout'),
+    proxyToggle: $('chpwd-proxy-toggle'),
+    btnRun: $('chpwd-btn-run'),
+    btnStopAll: $('chpwd-btn-stop-all'),
+    btnClearInput: $('chpwd-btn-clear-input'),
+    comboCount: $('chpwd-combo-count'),
+    jobList: $('chpwd-job-list'),
+    jobSummary: $('chpwd-job-summary'),
+    logPane: $('chpwd-log-pane'),
+    logTarget: $('chpwd-log-target'),
+    successPane: $('chpwd-success-pane'),
+    errorPane: $('chpwd-error-pane'),
+    btnCopySuccess: $('chpwd-btn-copy-success'),
+    btnCopyError: $('chpwd-btn-copy-error'),
+    btnClearDone: $('chpwd-btn-clear-done'),
+  };
+
+  if (!dom.comboInput) return;
+
+  function escHtml(value) {
+    return String(value).replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[char]));
+  }
+
+  function fmtDuration(secs) {
+    if (secs == null) return '';
+    if (secs < 60) return secs.toFixed(1) + 's';
+    return Math.floor(secs / 60) + 'm' + Math.floor(secs % 60) + 's';
+  }
+
+  function api(path, opts = {}) {
+    const token = window.GptUi.getAuthToken();
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(token ? { 'X-API-Token': token } : {}),
+      ...(opts.headers || {}),
+    };
+    return fetch(path, { ...opts, headers }).then((resp) => {
+      if (!resp.ok) {
+        return resp.text().then((text) => {
+          throw new Error(`HTTP ${resp.status}: ${text}`);
+        });
+      }
+      return resp.json();
+    });
+  }
+
+  function updateComboCount() {
+    const lines = dom.comboInput.value.split('\n').filter((line) => {
+      const trimmed = line.trim();
+      return trimmed && !trimmed.startsWith('#');
+    });
+    dom.comboCount.textContent = `${lines.length} combo${lines.length === 1 ? '' : 's'}`;
+  }
+
+  function planBadge(job) {
+    const plan = job.plan ? String(job.plan).toLowerCase() : '';
+    if (!plan) return '';
+    return `<span class="plan-badge plan-${escHtml(plan)}" title="Plan: ${escHtml(plan.toUpperCase())}">${escHtml(plan.toUpperCase())}</span>`;
+  }
+
+  function renderJobs() {
+    if (state.order.length === 0) {
+      dom.jobList.innerHTML = '<div class="empty">Paste accounts and click Run.</div>';
+      dom.jobSummary.textContent = '0 total';
+      return;
+    }
+    const stats = { queued: 0, running: 0, success: 0, error: 0, cancelled: 0 };
+    const html = state.order.map((id, index) => {
+      const job = state.jobs.get(id);
+      if (!job) return '';
+      stats[job.status] = (stats[job.status] || 0) + 1;
+      const cls = state.activeJobId === id ? 'job is-active' : 'job';
+      let actionButtons = '';
+      if (job.status === 'running') {
+        actionButtons = `<button class="icon-btn icon-danger" data-action="remove" data-id="${escHtml(id)}" title="Stop">${window.GptUi.icon('stop')}</button>`;
+      } else if (job.status === 'success') {
+        actionButtons = `
+          <button class="icon-btn" data-action="copy-json" data-id="${escHtml(id)}" title="Copy session JSON">${window.GptUi.icon('copy')}</button>
+          <button class="icon-btn" data-action="copy-token" data-id="${escHtml(id)}" title="Copy access token">${window.GptUi.icon('token')}</button>
+          <button class="icon-btn" data-action="retry" data-id="${escHtml(id)}" title="Retry">${window.GptUi.icon('retry')}</button>
+        `;
+      } else {
+        actionButtons = `<button class="icon-btn" data-action="retry" data-id="${escHtml(id)}" title="Retry">${window.GptUi.icon('retry')}</button>`;
+      }
+      return `
+        <div class="${cls}" data-id="${escHtml(id)}">
+          <div class="job-index">${index + 1}</div>
+          <div class="job-status status-${escHtml(job.status)}">${escHtml(job.status)}</div>
+          <div class="job-main">
+            <div class="job-email" title="${escHtml(job.email)}">
+              <span class="job-email-text">${escHtml(job.email)}</span>
+              ${planBadge(job)}
+            </div>
+          </div>
+          <div class="job-duration">${escHtml(fmtDuration(job.duration))}</div>
+          <div class="job-actions">
+            ${actionButtons}
+            <button class="icon-btn icon-danger" data-action="remove" data-id="${escHtml(id)}" title="Remove">${window.GptUi.icon('remove')}</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    dom.jobList.innerHTML = html;
+    dom.jobSummary.textContent = [
+      `${state.order.length} total`,
+      stats.running ? `${stats.running} running` : '',
+      stats.success ? `${stats.success} done` : '',
+      stats.error ? `${stats.error} failed` : '',
+    ].filter(Boolean).join(' | ');
+  }
+
+  function detailFor(jobId) {
+    if (detailCache.has(jobId)) return Promise.resolve(detailCache.get(jobId));
+    return api(`/api/change-password/jobs/${jobId}`).then((data) => {
+      detailCache.set(jobId, data);
+      return data;
+    });
+  }
+
+  function renderOutputs() {
+    const successLines = [];
+    const errorLines = [];
+    const pendingLoads = [];
+    for (const id of state.order) {
+      const job = state.jobs.get(id);
+      if (!job) continue;
+      if (job.status === 'success') {
+        const detail = detailCache.get(id);
+        if (!detail) {
+          pendingLoads.push(detailFor(id).then(() => renderOutputs()).catch(() => {}));
+          continue;
+        }
+        if (detail.new_password) {
+          successLines.push(`${job.email}|${detail.new_password}|${detail.secret || ''}`);
+        } else {
+          successLines.push(`${job.email}|${job.plan || 'unknown'}`);
+        }
+      } else if (job.status === 'error') {
+        errorLines.push(`${job.email} -> ${job.error || 'unknown'}`);
+      }
+    }
+    dom.successPane.textContent = successLines.length
+      ? successLines.join('\n')
+      : 'Format: email|new_password|secret_2fa';
+    dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'No errors yet.';
+    void pendingLoads;
+  }
+
+  function renderLog(jobId) {
+    if (!jobId) {
+      dom.logPane.textContent = '';
+      dom.logTarget.textContent = '-';
+      return;
+    }
+    const job = state.jobs.get(jobId);
+    if (!job) return;
+    dom.logTarget.textContent = job.email;
+    api(`/api/change-password/jobs/${jobId}/log`).then((data) => {
+      dom.logPane.innerHTML = (data.log || []).map((line) => {
+        const cls = /(error|fatal|failed|timeout)/i.test(line) ? 'log-line-error' : 'log-line-info';
+        return `<span class="${cls}">${escHtml(line)}\n</span>`;
+      }).join('');
+      dom.logPane.scrollTop = dom.logPane.scrollHeight;
+    }).catch((err) => {
+      dom.logPane.textContent = `[error] ${err.message}`;
+    });
+  }
+
+  function applySnapshot(snapshot) {
+    state.order = (snapshot.jobs || []).map((job) => job.id);
+    state.jobs.clear();
+    for (const job of snapshot.jobs || []) state.jobs.set(job.id, job);
+    for (const id of Array.from(detailCache.keys())) {
+      if (!state.jobs.has(id)) detailCache.delete(id);
+    }
+    if (snapshot.job_timeout) dom.jobTimeout.value = snapshot.job_timeout;
+    if (typeof snapshot.use_proxy === 'boolean') dom.proxyToggle.checked = snapshot.use_proxy;
+    renderJobs();
+    renderOutputs();
+  }
+
+  function applyJobUpdate(job) {
+    const prev = state.jobs.get(job.id);
+    if (!prev) state.order.push(job.id);
+    if (prev && prev.status !== job.status) detailCache.delete(job.id);
+    state.jobs.set(job.id, job);
+    renderJobs();
+    renderOutputs();
+    if (state.activeJobId === job.id) renderLog(job.id);
+    if (job.status === 'success' && (!prev || prev.status !== 'success') && window.GptUi.playSuccessAlert) {
+      window.GptUi.playSuccessAlert();
+    }
+    if (job.status === 'error' && (!prev || prev.status !== 'error') && window.GptUi.playErrorAlert) {
+      window.GptUi.playErrorAlert();
+    }
+  }
+
+  function applyRemove(jobId) {
+    state.jobs.delete(jobId);
+    state.order = state.order.filter((id) => id !== jobId);
+    detailCache.delete(jobId);
+    if (state.activeJobId === jobId) {
+      state.activeJobId = null;
+      renderLog(null);
+    }
+    renderJobs();
+    renderOutputs();
+  }
+
+  function applyLog(jobId, line) {
+    if (state.activeJobId !== jobId) return;
+    const cls = /(error|fatal|failed|timeout)/i.test(line) ? 'log-line-error' : 'log-line-info';
+    const span = document.createElement('span');
+    span.className = cls;
+    span.textContent = line + '\n';
+    dom.logPane.appendChild(span);
+    dom.logPane.scrollTop = dom.logPane.scrollHeight;
+  }
+
+  async function syncConfig() {
+    const selected = document.getElementById('mode')?.value || 'single';
+    const maxConcurrent = Math.min(MODE_TO_CONCURRENCY[selected] || 1, 10);
+    const timeout = parseInt(dom.jobTimeout.value, 10) || 240;
+    return api('/api/change-password/config', {
+      method: 'POST',
+      body: JSON.stringify({
+        max_concurrent: maxConcurrent,
+        job_timeout: timeout,
+        use_proxy: dom.proxyToggle.checked,
+      }),
+    });
+  }
+
+  dom.comboInput.addEventListener('input', () => {
+    updateComboCount();
+    window.GptUi.persistTextarea(LS_INPUT, dom.comboInput.value);
+  });
+
+  dom.btnRun.addEventListener('click', async () => {
+    const combos = dom.comboInput.value.trim();
+    if (!combos) {
+      await Dialog.alert({ message: 'Paste accounts first.' });
+      return;
+    }
+    const mode = dom.mode.value;
+    const body = {
+      combos,
+      new_password: dom.newPassword.value.trim() || null,
+      check_plan_only: mode === 'check_plan',
+      skip_password_change: mode === 'session_only',
+    };
+    if (mode === 'change_password' && !body.new_password) {
+      const ok = await Dialog.confirm({
+        message: 'New password is blank. The app will generate a random password for each account.',
+        confirmLabel: 'Continue',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+    }
+    dom.btnRun.disabled = true;
+    try {
+      await syncConfig();
+      await api('/api/change-password/jobs', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      await Dialog.alert({ message: 'Error: ' + err.message });
+    } finally {
+      dom.btnRun.disabled = false;
+    }
+  });
+
+  dom.jobTimeout.addEventListener('change', async () => {
+    try {
+      await syncConfig();
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  dom.proxyToggle.addEventListener('change', async () => {
+    try {
+      await syncConfig();
+    } catch (err) {
+      dom.proxyToggle.checked = !dom.proxyToggle.checked;
+      await Dialog.alert({ message: err.message });
+    }
+  });
+
+  dom.btnClearInput.addEventListener('click', () => {
+    dom.comboInput.value = '';
+    updateComboCount();
+    window.GptUi.clearPersistedTextarea(LS_INPUT);
+  });
+
+  dom.btnStopAll.addEventListener('click', async () => {
+    try {
+      await api('/api/change-password/jobs/stop-all', { method: 'POST' });
+    } catch (err) {
+      await Dialog.alert({ message: err.message });
+    }
+  });
+
+  dom.btnClearDone.addEventListener('click', async () => {
+    try {
+      await api('/api/change-password/jobs/clear-finished', { method: 'POST' });
+    } catch (err) {
+      await Dialog.alert({ message: err.message });
+    }
+  });
+
+  dom.btnCopySuccess.addEventListener('click', () => {
+    window.GptUi.copyText(dom.successPane.textContent);
+  });
+
+  dom.btnCopyError.addEventListener('click', () => {
+    window.GptUi.copyText(dom.errorPane.textContent);
+  });
+
+  dom.jobList.addEventListener('click', (event) => {
+    const actionBtn = event.target.closest('[data-action]');
+    if (actionBtn) {
+      const action = actionBtn.dataset.action;
+      const id = actionBtn.dataset.id;
+      event.stopPropagation();
+      if (action === 'retry') {
+        api(`/api/change-password/jobs/${id}/retry`, { method: 'POST' }).catch(async (err) => {
+          await Dialog.alert({ message: err.message });
+        });
+      } else if (action === 'remove') {
+        api(`/api/change-password/jobs/${id}`, { method: 'DELETE' }).catch(async (err) => {
+          await Dialog.alert({ message: err.message });
+        });
+      } else if (action === 'copy-json' || action === 'copy-token') {
+        detailFor(id).then((detail) => {
+          if (action === 'copy-json') {
+            window.GptUi.copyText(JSON.stringify(detail.session_data || {}, null, 2));
+          } else if (detail.session_data && detail.session_data.accessToken) {
+            window.GptUi.copyText(detail.session_data.accessToken);
+          }
+        }).catch(async (err) => {
+          await Dialog.alert({ message: err.message });
+        });
+      }
+      return;
+    }
+    const row = event.target.closest('.job');
+    if (row) {
+      state.activeJobId = row.dataset.id;
+      renderJobs();
+      renderLog(state.activeJobId);
+    }
+  });
+
+  SseBus.on('change_password', (data) => {
+    if (data.type === 'snapshot') {
+      applySnapshot(data);
+    } else if (data.type === 'job') {
+      applyJobUpdate(data.job);
+    } else if (data.type === 'remove') {
+      applyRemove(data.job_id);
+    } else if (data.type === 'clear_finished') {
+      api('/api/change-password/jobs').then((snapshot) => applySnapshot(snapshot)).catch(console.error);
+    } else if (data.type === 'log') {
+      applyLog(data.job_id, data.line);
+    }
+  });
+
+  const savedInput = localStorage.getItem(LS_INPUT);
+  if (savedInput) dom.comboInput.value = savedInput;
+  updateComboCount();
+  api('/api/change-password/config').then((cfg) => {
+    if (cfg.job_timeout) dom.jobTimeout.value = cfg.job_timeout;
+    if (typeof cfg.use_proxy === 'boolean') dom.proxyToggle.checked = cfg.use_proxy;
+  }).catch(() => {});
+
+  setInterval(() => {
+    let hasRunning = false;
+    for (const [, job] of state.jobs) {
+      if (job.status === 'running' && job.started_at) {
+        hasRunning = true;
+        job.duration = (Date.now() / 1000) - job.started_at;
+      }
+    }
+    if (hasRunning) renderJobs();
+  }, 1000);
+})();

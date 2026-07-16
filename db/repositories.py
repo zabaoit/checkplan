@@ -75,6 +75,7 @@ _EXACT_KEYS: frozenset[str] = frozenset([
     "upi.notify_enabled", "upi.use_proxy",
     "upi.approve.restart_threshold", "upi.approve.max_restarts",
     "upi.proxy_from_step",
+    "chpwd.max_concurrent", "chpwd.job_timeout", "chpwd.use_proxy",
     "telegram.bot_token", "telegram.chat_id",
     "ui.active_tab", "ui.link_mode",
     "web.auth_token",
@@ -481,6 +482,36 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         if not (1 <= value <= 6):
             raise RepositoryError(
                 "set", ValueError(f"{key}: must be in [1, 6], got {value}")
+            )
+        return
+
+    # --- change-password namespace ---
+    if key == "chpwd.max_concurrent":
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (1 <= value <= 10):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [1, 10], got {value}")
+            )
+        return
+
+    if key == "chpwd.job_timeout":
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (30 <= value <= 900):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [30, 900], got {value}")
+            )
+        return
+
+    if key == "chpwd.use_proxy":
+        if not isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be bool, got {type(value).__name__}")
             )
         return
 

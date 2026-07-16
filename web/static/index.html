@@ -17,6 +17,7 @@
   <nav class="tab-nav">
     <button class="tab-btn active" data-tab="reg">Reg</button>
     <button class="tab-btn" data-tab="session">Get Session</button>
+    <button class="tab-btn" data-tab="change-password">Change PW</button>
     <button class="tab-btn" data-tab="upi">UPI QR</button>
     <!-- TẠM ẨN: Get Link + HME chưa dùng được. Mở lại = bỏ comment 2 dòng dưới. -->
     <!-- <button class="tab-btn" data-tab="link">Get Link</button> -->
@@ -197,6 +198,86 @@
 </main>
 
 <!-- ════════════════ TAB: UPI QR ════════════════ -->
+<!-- TAB: CHANGE PASSWORD -->
+<main class="grid tab-content" id="tab-change-password">
+  <section class="card card-input">
+    <header class="card-head">
+      <h2>Input</h2>
+      <span class="muted card-head-note">email|current_password|2fa_secret|session_json</span>
+    </header>
+    <textarea class="combo-textarea" id="chpwd-combo-input" placeholder="email@example.com|currentPassword|TOTP_SECRET&#10;email2@example.com|currentPassword2|TOTP_SECRET|{&quot;sessionToken&quot;:&quot;...&quot;}"></textarea>
+    <div class="card-settings">
+      <div class="card-settings-row card-settings-row-mixed">
+        <label class="input-group config-field-long">
+          <span class="input-label">New password</span>
+          <input type="text" id="chpwd-new-password" placeholder="Leave blank for random per account" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="input-group config-field-short">
+          <span class="input-label">Mode</span>
+          <select id="chpwd-mode">
+            <option value="change_password">Change password</option>
+            <option value="session_only">Get session only</option>
+            <option value="check_plan">Check plan only</option>
+          </select>
+        </label>
+        <label class="input-group config-field-short">
+          <span class="input-label">Timeout (s/job)</span>
+          <input type="number" id="chpwd-job-timeout" value="240" min="30" max="900" step="10" />
+        </label>
+        <label class="toggle-wrap" title="Use proxy pool for change-password jobs">
+          <input type="checkbox" id="chpwd-proxy-toggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Proxy</span>
+        </label>
+      </div>
+    </div>
+    <div class="card-actions">
+      <button id="chpwd-btn-run" class="btn btn-primary">Run</button>
+      <button id="chpwd-btn-stop-all" class="btn btn-danger">Stop All</button>
+      <button id="chpwd-btn-clear-input" class="btn btn-ghost">Clear Input</button>
+      <span class="muted" id="chpwd-combo-count">0 combos</span>
+    </div>
+  </section>
+
+  <section class="card card-jobs">
+    <header class="card-head">
+      <h2>Jobs</h2>
+      <div class="card-head-actions">
+        <button id="chpwd-btn-clear-done" class="btn btn-ghost btn-small">Clear Done</button>
+        <span class="muted" id="chpwd-job-summary">0 total</span>
+      </div>
+    </header>
+    <div id="chpwd-job-list" class="job-list">
+      <div class="empty">Paste accounts and click Run.</div>
+    </div>
+  </section>
+
+  <section class="card card-log">
+    <header class="card-head">
+      <h2>Log</h2>
+      <span class="muted" id="chpwd-log-target">-</span>
+    </header>
+    <pre id="chpwd-log-pane" class="log-pane"></pre>
+  </section>
+
+  <section class="card card-success">
+    <header class="card-head">
+      <h2>Success output</h2>
+      <button id="chpwd-btn-copy-success" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="chpwd-success-pane" class="output-pane">Format: email|new_password|secret_2fa</pre>
+  </section>
+
+  <section class="card card-error">
+    <header class="card-head">
+      <h2>Error output</h2>
+      <button id="chpwd-btn-copy-error" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="chpwd-error-pane" class="output-pane">No errors yet.</pre>
+  </section>
+</main>
+
+<!-- TAB: UPI QR -->
 <main class="grid tab-content" id="tab-upi">
   <section class="card card-input">
     <header class="card-head">
@@ -836,6 +917,7 @@
 <script src="/static/settings.js?v=__ASSET_VERSION__"></script>
 <script src="/static/app.js?v=__ASSET_VERSION__"></script>
 <script src="/static/session.js?v=__ASSET_VERSION__"></script>
+<script src="/static/change_password.js?v=__ASSET_VERSION__"></script>
 <script src="/static/link.js?v=__ASSET_VERSION__"></script>
 <script src="/static/hme.js?v=__ASSET_VERSION__"></script>
 <script src="/static/autoreg.js?v=__ASSET_VERSION__"></script>

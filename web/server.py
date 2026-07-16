@@ -13,6 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .auth import get_token, require_token  # token-based auth
+from .change_password_manager import (
+    get_change_password_manager,
+    set_change_password_sse_mux,
+)
 from .manager import get_manager, get_session_manager, get_link_manager, get_upi_manager, set_sse_mux
 from .mail_modes import get_registry, serialize_for_api
 from .sse_mux import SseMux
@@ -23,6 +27,7 @@ _log = logging.getLogger(__name__)
 # ── Unified SSE Multiplexer singleton ──
 _sse_mux = SseMux()
 set_sse_mux(_sse_mux)  # Inject into manager module (avoids circular import)
+set_change_password_sse_mux(_sse_mux)
 
 
 def get_sse_mux() -> SseMux:
@@ -84,6 +89,7 @@ async def on_startup():
     # Initialize session + link managers with job_repo (triggers recovery)
     get_session_manager(job_repo=job_repo)
     get_link_manager(job_repo=job_repo)
+    get_change_password_manager()
     # UPI manager — in-memory only, không cần job_repo.
     get_upi_manager()
 
@@ -94,6 +100,7 @@ async def on_startup():
     get_session_manager().apply_settings(all_settings)
     get_link_manager().apply_settings(all_settings)
     get_upi_manager().apply_settings(all_settings)
+    get_change_password_manager().apply_settings(all_settings)
     # Telegram notifier — hydrate config (token/chat_id/notify toggle) từ DB.
     from .telegram_notifier import get_telegram_notifier
     get_telegram_notifier().apply_settings(all_settings)
@@ -109,6 +116,7 @@ async def on_startup():
     sm = get_session_manager()
     lm = get_link_manager()
     um = get_upi_manager()
+    cm = get_change_password_manager()
 
     _sse_mux.register_snapshot("reg", lambda: [{
         "type": "snapshot",
@@ -151,6 +159,14 @@ async def on_startup():
         "max_restarts": um.max_restarts,
         "use_proxy": um.use_proxy,
         "jobs": um.list_jobs(),
+    }])
+
+    _sse_mux.register_snapshot("change_password", lambda: [{
+        "type": "snapshot",
+        "max_concurrent": cm.max_concurrent,
+        "job_timeout": cm.job_timeout,
+        "use_proxy": cm.use_proxy,
+        "jobs": cm.list_jobs(),
     }])
 
     def _hme_log_snapshot() -> list[dict]:
@@ -827,6 +843,8 @@ async def on_shutdown():
     lm.shutdown()
     um = get_upi_manager()
     um.shutdown()
+    cm = get_change_password_manager()
+    cm.shutdown()
 
     # Stop AutoRegRunner if it was initialized and is running
     from .icloud_routes import get_autoreg_runner
@@ -970,6 +988,139 @@ async def set_session_config(payload: SetSessionConfigRequest) -> JSONResponse:
 # ─────────────────────────────────────────────────────────────────────
 # Link API (Get Payment Link feature)
 # ─────────────────────────────────────────────────────────────────────
+
+
+# Change Password API
+class AddChangePasswordJobsRequest(BaseModel):
+    combos: str = Field(..., description="email|current_password|2fa_secret|session_json per line")
+    new_password: str | None = Field(default=None, description="Blank/null => random per job")
+    check_plan_only: bool = Field(default=False)
+    skip_password_change: bool = Field(default=False)
+
+
+class SetChangePasswordConfigRequest(BaseModel):
+    max_concurrent: int | None = Field(default=None, ge=1)
+    job_timeout: float | None = Field(default=None, ge=30, le=900)
+    use_proxy: bool | None = None
+
+
+@app.get("/api/change-password/jobs")
+async def list_change_password_jobs() -> JSONResponse:
+    cm = get_change_password_manager()
+    return JSONResponse({
+        "max_concurrent": cm.max_concurrent,
+        "job_timeout": cm.job_timeout,
+        "use_proxy": cm.use_proxy,
+        "jobs": cm.list_jobs(),
+    })
+
+
+@app.get("/api/change-password/jobs/{job_id}")
+async def get_change_password_job(job_id: str) -> JSONResponse:
+    cm = get_change_password_manager()
+    data = cm.get_job(job_id)
+    if data is None:
+        raise HTTPException(404, "job not found")
+    return JSONResponse(data)
+
+
+@app.get("/api/change-password/jobs/{job_id}/log")
+async def get_change_password_job_log(job_id: str) -> JSONResponse:
+    cm = get_change_password_manager()
+    if job_id not in cm.jobs:
+        raise HTTPException(404, "job not found")
+    return JSONResponse({"job_id": job_id, "log": cm.get_log(job_id)})
+
+
+@app.post("/api/change-password/jobs")
+async def add_change_password_jobs(payload: AddChangePasswordJobsRequest) -> JSONResponse:
+    if payload.check_plan_only and payload.skip_password_change:
+        raise HTTPException(400, "check_plan_only va skip_password_change khong duoc bat dong thoi")
+    cm = get_change_password_manager()
+    jobs = cm.add_jobs(
+        payload.combos.splitlines(),
+        new_password=payload.new_password,
+        check_plan_only=payload.check_plan_only,
+        skip_password_change=payload.skip_password_change,
+    )
+    return JSONResponse({"added": len(jobs), "jobs": [job.to_dict() for job in jobs]})
+
+
+@app.post("/api/change-password/jobs/{job_id}/retry")
+async def retry_change_password_job(job_id: str) -> JSONResponse:
+    cm = get_change_password_manager()
+    if job_id not in cm.jobs:
+        raise HTTPException(404, "job not found")
+    ok = await cm.retry_job(job_id)
+    if not ok:
+        raise HTTPException(409, "job dang chay hoac khong retry duoc")
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/change-password/jobs/{job_id}")
+async def delete_change_password_job(job_id: str) -> JSONResponse:
+    cm = get_change_password_manager()
+    if job_id not in cm.jobs:
+        raise HTTPException(404, "job not found")
+    if not cm.remove_job(job_id):
+        raise HTTPException(500, "failed to delete job")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/change-password/jobs/stop-all")
+async def stop_all_change_password_jobs() -> JSONResponse:
+    cm = get_change_password_manager()
+    stopped = await cm.stop_all()
+    return JSONResponse({"stopped": stopped})
+
+
+@app.post("/api/change-password/jobs/clear-finished")
+async def clear_finished_change_password_jobs() -> JSONResponse:
+    cm = get_change_password_manager()
+    removed = cm.clear_finished()
+    return JSONResponse({"removed": removed})
+
+
+@app.get("/api/change-password/config")
+async def get_change_password_config() -> JSONResponse:
+    cm = get_change_password_manager()
+    return JSONResponse({
+        "max_concurrent": cm.max_concurrent,
+        "job_timeout": cm.job_timeout,
+        "use_proxy": cm.use_proxy,
+    })
+
+
+@app.post("/api/change-password/config")
+async def set_change_password_config(payload: SetChangePasswordConfigRequest) -> JSONResponse:
+    cm = get_change_password_manager()
+    settings_writes: dict[str, Any] = {}
+    if payload.max_concurrent is not None:
+        try:
+            clamped = max(1, min(payload.max_concurrent, 10))
+            cm.set_max_concurrent(clamped)
+            settings_writes["chpwd.max_concurrent"] = clamped
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if payload.job_timeout is not None:
+        try:
+            cm.set_job_timeout(payload.job_timeout)
+            settings_writes["chpwd.job_timeout"] = int(payload.job_timeout)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if payload.use_proxy is not None:
+        cm.set_use_proxy(payload.use_proxy)
+        settings_writes["chpwd.use_proxy"] = payload.use_proxy
+    if settings_writes:
+        try:
+            _get_settings_repo().bulk_set(settings_writes)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Change password config write-through failed: %s", exc)
+    return JSONResponse({
+        "max_concurrent": cm.max_concurrent,
+        "job_timeout": cm.job_timeout,
+        "use_proxy": cm.use_proxy,
+    })
 
 
 class AddLinkJobsRequest(BaseModel):
