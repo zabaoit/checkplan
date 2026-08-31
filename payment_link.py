@@ -609,6 +609,7 @@ async def check_gpt_offer_async(
     # 2. Try 50% discount coupons and natural account offer
     discount_promos = [
         ("plus-3-months-50-pct-off", "Giảm 50% (3T)"),
+        ("plus-2-months-50-pct-off", "Giảm 50% (2T)"),
         ("plus-1-month-50-pct-off", "Giảm 50% (1T)"),
         (None, "Special Offer"),
     ]
