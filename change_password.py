@@ -163,9 +163,10 @@ async def change_password(
     *,
     email: str,
     current_password: str,
-    new_password: str,
+    new_password: str = "",
     check_plan_only: bool = False,
     skip_password_change: bool = False,
+    change_2fa_only: bool = False,
     secret: str | None = None,
     initial_session: str | dict[str, Any] | None = None,
     proxy: str | None = None,
@@ -181,6 +182,7 @@ async def change_password(
                 new_password=new_password,
                 check_plan_only=check_plan_only,
                 skip_password_change=skip_password_change,
+                change_2fa_only=change_2fa_only,
                 secret=secret,
                 initial_session=initial_session,
                 proxy=proxy,
@@ -212,6 +214,7 @@ async def change_password(
                         new_password=new_password,
                         check_plan_only=check_plan_only,
                         skip_password_change=skip_password_change,
+                        change_2fa_only=change_2fa_only,
                         secret=secret,
                         initial_session=browser_session,
                         proxy=proxy,
@@ -242,21 +245,22 @@ async def _change_password_once(
     *,
     email: str,
     current_password: str,
-    new_password: str,
+    new_password: str = "",
     check_plan_only: bool = False,
     skip_password_change: bool = False,
+    change_2fa_only: bool = False,
     secret: str | None = None,
     initial_session: str | dict[str, Any] | None = None,
     proxy: str | None = None,
     log: LogFn = print,
 ) -> dict[str, Any]:
-    """Login/inject session → tùy chọn đổi password → trả session đã refresh."""
+    """Login/inject session → tùy chọn đổi password/2FA → trả session đã refresh."""
     email = str(email or "").strip()
     current_password = str(current_password or "")
     new_password = str(new_password or "")
     if not email or not current_password:
         raise ChangePasswordError("email/current_password are required")
-    if not new_password and not check_plan_only and not skip_password_change:
+    if not new_password and not check_plan_only and not skip_password_change and not change_2fa_only:
         raise ChangePasswordError("new_password is required")
 
     proxies = {"http": proxy, "https": proxy} if proxy else None
@@ -308,6 +312,29 @@ async def _change_password_once(
             log(f"[chpwd] {label} mode; skipping password change")
             return await fetch_session(sess, email, log, proxy=proxy, label=label)
 
+        if change_2fa_only:
+            log("[chpwd] change 2FA mode; initiating 2FA enrollment/rotation...")
+            session_data = await fetch_session(sess, email, log, proxy=proxy, label="pre-2fa")
+            access_token = str(session_data.get("accessToken") or "")
+            cookies = export_session_cookies(sess)
+            from mfa_phase import change_or_enable_2fa_in_session, MfaError
+            try:
+                mfa_res = await change_or_enable_2fa_in_session(
+                    sess,
+                    access_token=access_token,
+                    cookies=cookies,
+                    log=log,
+                )
+            except MfaError as exc:
+                raise ChangePasswordError(f"Change 2FA failed: {exc}", committed=False) from exc
+
+            new_secret = mfa_res.get("secret")
+            refreshed = await fetch_session(sess, email, log, proxy=proxy, label="post-2fa", committed=True)
+            refreshed["new_secret"] = new_secret
+            refreshed["secret"] = new_secret
+            log(f"[chpwd] change 2FA OK! New secret: {new_secret}")
+            return refreshed
+
         reauth_url = await trigger_password_change_reauth(
             sess,
             email=email,
@@ -322,14 +349,35 @@ async def _change_password_once(
             secret=secret,
             log=log,
         )
-        return await fetch_session(
-            sess,
-            email,
-            log,
-            proxy=proxy,
-            label="refreshed",
-            committed=True,
-        )
+        try:
+            return await fetch_session(
+                sess,
+                email,
+                log,
+                proxy=proxy,
+                label="refreshed",
+                committed=True,
+            )
+        except Exception as exc:
+            log(f"[chpwd] session refresh post-reset note: {exc} — refreshing session with new password")
+            try:
+                fresh_session = await get_session_pure_request(
+                    email=email,
+                    password=new_password,
+                    secret=secret,
+                    proxy=proxy,
+                    log=log,
+                )
+                return fresh_session
+            except Exception as login_exc:
+                log(f"[chpwd] post-reset fresh login note: {login_exc}")
+                return {
+                    "email": email,
+                    "user": {"email": email},
+                    "new_password": new_password,
+                    "secret": secret,
+                    "plan": "unknown",
+                }
 
 
 def cookies_from_initial_session(
@@ -1097,9 +1145,9 @@ async def fetch_session(
             except Exception as e:
                 offer_res = {"success": False, "error": str(e)}
 
-            if not offer_res.get("success") or not offer_res.get("has_trial"):
+            if not offer_res.get("success"):
+                err_detail = offer_res.get("error") or "Khởi tạo checkout thất bại"
                 data["plan"] = "KHÔNG CÓ OFFER"
-                err_detail = offer_res.get("error") or "Không có offer 0đ"
                 raise ChangePasswordError(f"KHÔNG CÓ OFFER: {err_detail}")
 
             pm_list = offer_res.get("payment_methods") or []
@@ -1117,7 +1165,31 @@ async def fetch_session(
                         pm_labels.append("MOMO")
 
             methods_str = ", ".join(pm_labels)
-            plan = f"CÓ OFFER ({methods_str})" if methods_str else "CÓ OFFER"
+
+            if not offer_res.get("has_trial") and not offer_res.get("has_discount"):
+                amount_str = offer_res.get("amount_str") or ""
+                plan_label = f"KHÔNG CÓ OFFER [{amount_str}]" if amount_str else "KHÔNG CÓ OFFER"
+                if methods_str:
+                    plan_label += f" ({methods_str})"
+                data["plan"] = plan_label
+                data["amount_str"] = amount_str
+                data["offer_details"] = offer_res
+                raise ChangePasswordError(plan_label)
+
+            if offer_res.get("has_discount") and not offer_res.get("has_trial"):
+                amount_str = offer_res.get("amount_str") or ""
+                p_label = offer_res.get("promo_label")
+                if p_label:
+                    pct_str = f"{p_label} · "
+                else:
+                    pct = offer_res.get("discount_percent")
+                    pct_str = f"Giảm {pct}% · " if pct else "Offer · "
+                plan = f"CÓ OFFER [{pct_str}{amount_str}]"
+                if methods_str:
+                    plan += f" ({methods_str})"
+            else:
+                plan = f"CÓ OFFER ({methods_str})" if methods_str else "CÓ OFFER"
+
             data["plan"] = plan
             data["offer_details"] = offer_res
 

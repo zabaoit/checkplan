@@ -918,11 +918,26 @@ body {
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
 }
 
+.plan-badge.plan-offer-discount {
+  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  color: #ffffff;
+  border: none;
+  font-weight: 800;
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
+}
+
 .plan-badge.plan-err {
   background: #ef4444;
   color: #ffffff;
   border: none;
   box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+.plan-badge.plan-price-tag {
+  background: #27272a;
+  color: #fbbf24;
+  border: 1px solid #52525b;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.2);
 }
 
 .plan-badge.plan-plus {

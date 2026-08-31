@@ -255,12 +255,35 @@ def parse_trial_and_amount(stripe_info: dict) -> tuple[float | None, str, bool |
 
     currency = str(stripe_info.get("currency") or total_summary.get("currency") or checkout_state.get("currency") or "VND").upper()
 
-    promo_campaign = stripe_info.get("promo_campaign")
-    has_promo = bool(promo_campaign and isinstance(promo_campaign, dict) and promo_campaign.get("promo_campaign_id"))
-    
-    is_trial = (amount_due == 0) if amount_due is not None else (True if has_promo else None)
+    is_trial = bool(amount_due is not None and amount_due == 0)
 
     return amount_due, currency, is_trial
+
+
+def format_currency_amount(amount: float | int | None, currency: str = "VND") -> str:
+    if amount is None:
+        return ""
+    curr = (currency or "VND").upper()
+    zero_decimal = {"VND", "IDR", "JPY", "KRW", "CLP", "PYG", "RWF", "UGX", "VUV", "XAF", "XOF", "XPF", "DJF", "GNF", "KMF", "BIF"}
+    if curr in zero_decimal:
+        val = int(amount)
+        formatted = f"{val:,}".replace(",", ".")
+        if curr == "VND":
+            return f"{formatted} ₫"
+        return f"{formatted} {curr}"
+    else:
+        val = float(amount)
+        if val >= 100 and val.is_integer():
+            val = val / 100.0
+        if curr == "USD":
+            return f"${val:,.2f}".rstrip("0").rstrip(".") if val != int(val) else f"${int(val)}"
+        elif curr == "EUR":
+            return f"€{val:,.2f}".rstrip("0").rstrip(".") if val != int(val) else f"€{int(val)}"
+        elif curr == "GBP":
+            return f"£{val:,.2f}".rstrip("0").rstrip(".") if val != int(val) else f"£{int(val)}"
+        elif curr == "INR":
+            return f"₹{val:,.2f}".rstrip("0").rstrip(".") if val != int(val) else f"₹{int(val)}"
+        return f"{val:,.2f} {curr}"
 
 
 @dataclass
@@ -431,31 +454,32 @@ async def _call_chatgpt_checkout(
     )
 
 
-async def check_gpt_offer_async(
+async def _execute_checkout_probe(
     session: AsyncSession,
     access_token: str,
-    promo_campaign: str = "plus-1-month-free",
+    promo_campaign: str | None = None,
     timeout: float = 20.0,
 ) -> dict[str, Any]:
     device_id = str(uuid.uuid4())
     try:
         sentinel_token = await generate_sentinel_token_async(session, device_id)
-    except Exception as exc:
+    except Exception:
         sentinel_token = None
 
-    referer = f"https://chatgpt.com/?promo_campaign={promo_campaign}"
+    referer = f"https://chatgpt.com/?promo_campaign={promo_campaign}" if promo_campaign else "https://chatgpt.com/#pricing"
     payload = {
         "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
         "billing_details": {"country": "VN", "currency": "VND"},
-        "promo_campaign": {
-            "promo_campaign_id": promo_campaign,
-            "is_coupon_from_query_param": True,
-        },
         "prefetch": True,
         "checkout_ui_mode": "hosted",
         "cancel_url": "https://chatgpt.com/#pricing",
     }
+    if promo_campaign:
+        payload["promo_campaign"] = {
+            "promo_campaign_id": promo_campaign,
+            "is_coupon_from_query_param": True,
+        }
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -514,17 +538,104 @@ async def check_gpt_offer_async(
     payment_methods = parse_payment_methods(stripe_info)
     amount_due, currency, is_trial = parse_trial_and_amount(stripe_info)
 
+    total_summary = stripe_info.get("total_summary") or {}
+    subtotal = total_summary.get("subtotal") or stripe_info.get("amount_subtotal")
+    discount = total_summary.get("discount")
+    try:
+        subtotal = float(subtotal) if subtotal is not None else None
+    except (ValueError, TypeError):
+        subtotal = None
+    try:
+        discount = float(discount) if discount is not None else None
+    except (ValueError, TypeError):
+        discount = None
+
+    has_discount = False
+    discount_percent = None
+    if amount_due is not None and amount_due > 0:
+        if subtotal and subtotal > amount_due:
+            has_discount = True
+            discount_percent = round((subtotal - amount_due) / subtotal * 100)
+        elif discount and discount > 0:
+            has_discount = True
+            if subtotal:
+                discount_percent = round(discount / subtotal * 100)
+            else:
+                discount_percent = 50
+        elif currency == "VND" and amount_due <= 300000:
+            has_discount = True
+            discount_percent = round((522500 - amount_due) / 522500 * 100)
+        elif currency == "USD" and amount_due <= 1500:
+            has_discount = True
+            discount_percent = round((2000 - amount_due) / 2000 * 100)
+
+    amount_str = format_currency_amount(amount_due, currency) if amount_due is not None else ""
+
     return {
         "success": True,
         "session_id": session_id,
         "has_trial": is_trial,
+        "has_discount": has_discount,
+        "discount_percent": discount_percent,
         "amount_due": amount_due,
+        "subtotal": subtotal,
         "currency": currency,
+        "amount_str": amount_str,
         "payment_methods": payment_methods,
         "has_momo": "momo" in payment_methods,
         "has_gpay": "google_pay" in payment_methods,
         "has_apple_pay": "apple_pay" in payment_methods,
     }
+
+
+async def check_gpt_offer_async(
+    session: AsyncSession,
+    access_token: str,
+    promo_campaign: str = "plus-1-month-free",
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    # 1. Try 0d trial first (must be strictly amount_due == 0)
+    try:
+        trial_res = await _execute_checkout_probe(session, access_token, promo_campaign="plus-1-month-free", timeout=timeout)
+        if trial_res.get("success"):
+            if trial_res.get("has_trial"):
+                trial_res["promo_label"] = "Trial · 0 đ"
+                return trial_res
+            if trial_res.get("error") and "401" in str(trial_res.get("error")):
+                return trial_res
+    except Exception:
+        trial_res = None
+
+    # 2. Try 50% discount coupons and natural account offer
+    discount_promos = [
+        ("plus-3-months-50-pct-off", "Giảm 50% (3T)"),
+        ("plus-1-month-50-pct-off", "Giảm 50% (1T)"),
+        (None, "Special Offer"),
+    ]
+
+    last_res = trial_res
+    for p_id, p_label in discount_promos:
+        try:
+            res = await _execute_checkout_probe(session, access_token, promo_campaign=p_id, timeout=timeout)
+            if not res.get("success"):
+                if res.get("error") and "401" in str(res.get("error")):
+                    return res
+                continue
+
+            last_res = res
+            if res.get("has_trial"):
+                res["promo_label"] = "Trial · 0 đ"
+                return res
+
+            if res.get("has_discount"):
+                res["promo_label"] = p_label or f"Giảm {res.get('discount_percent')}%"
+                return res
+        except Exception:
+            continue
+
+    if last_res:
+        return last_res
+    return {"success": False, "error": "Khởi tạo checkout thất bại cho mọi coupon"}
 
 
 async def _call_stripe_init_data(

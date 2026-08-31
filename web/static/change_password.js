@@ -90,19 +90,60 @@
   }
 
   function planBadge(job) {
-    if (job.status === 'error') {
-      return `<span class="plan-badge plan-err">KHÔNG CÓ OFFER</span>`;
+    const isError = job.status === 'error';
+    const textToCheck = isError ? String(job.error || '') : String(job.plan || '');
+
+    if (isError) {
+      if (textToCheck.toUpperCase().includes('KHÔNG CÓ OFFER')) {
+        const amountMatch = textToCheck.match(/\[(.*?)\]/);
+        const amountStr = amountMatch ? amountMatch[1] : '';
+
+        const methodsMatch = textToCheck.match(/\((.*?)\)/);
+        const methodsStr = methodsMatch ? methodsMatch[1] : '';
+        const methods = methodsStr ? methodsStr.split(',').map(s => s.trim()) : [];
+
+        let html = `<span class="plan-badge plan-err">KHÔNG CÓ OFFER</span>`;
+        if (amountStr) {
+          html += `<span class="plan-badge plan-price-tag">${escHtml(amountStr)}</span>`;
+        }
+        if (methods.length > 0 || amountStr) {
+          html += `<span class="payment-tag payment-tag-stripe">Stripe</span>`;
+        }
+        for (const m of methods) {
+          if (!m) continue;
+          const mUpper = m.toUpperCase();
+          if (mUpper === 'APPLE PAY' || mUpper === 'APPLEPAY') {
+            html += `<span class="payment-tag payment-tag-applepay">Apple Pay</span>`;
+          } else if (mUpper === 'GPAY' || mUpper === 'GOOGLE PAY' || mUpper === 'GOOGLEPAY') {
+            html += `<span class="payment-tag payment-tag-gpay">Google Pay</span>`;
+          } else if (mUpper === 'MOMO') {
+            html += `<span class="payment-tag payment-tag-momo">MoMo</span>`;
+          }
+        }
+        return html;
+      }
+      return `<span class="plan-badge plan-err">${escHtml(textToCheck.slice(0, 30) || 'KHÔNG CÓ OFFER')}</span>`;
     }
 
     let planStr = job.plan ? String(job.plan) : '';
     if (!planStr) return '';
 
     if (planStr.toUpperCase().includes('CÓ OFFER')) {
-      const match = planStr.match(/CÓ OFFER\s*\((.*?)\)/i);
-      const methodsStr = match ? match[1] : '';
+      const match = planStr.match(/CÓ OFFER\s*(?:\[(.*?)\])?\s*(?:\((.*?)\))?/i);
+      const customTag = match && match[1] ? match[1] : '';
+      let methodsStr = match && match[2] ? match[2] : '';
+      if (!methodsStr) {
+        const altMatch = planStr.match(/\((.*?)\)/);
+        if (altMatch) methodsStr = altMatch[1];
+      }
       const methods = methodsStr ? methodsStr.split(',').map(s => s.trim()) : [];
       
-      let html = `<span class="plan-badge plan-offer-yes">Trial · 0 đ</span>`;
+      let html = '';
+      if (customTag) {
+        html += `<span class="plan-badge plan-offer-discount">${escHtml(customTag)}</span>`;
+      } else {
+        html += `<span class="plan-badge plan-offer-yes">Trial · 0 đ</span>`;
+      }
       html += `<span class="payment-tag payment-tag-stripe">Stripe</span>`;
       
       for (const m of methods) {
@@ -197,7 +238,10 @@
           pendingLoads.push(detailFor(id).then(() => renderOutputs()).catch(() => {}));
           continue;
         }
-        if (detail.new_password) {
+        if (job.mode === 'change_2fa' || (!detail.new_password && detail.secret)) {
+          const pw = detail.current_password || job.current_password || '';
+          successLines.push(`${job.email}|${pw}|${detail.secret || ''}`);
+        } else if (detail.new_password) {
           successLines.push(`${job.email}|${detail.new_password}|${detail.secret || ''}`);
         } else {
           successLines.push(`${job.email} -> ${job.plan || 'PLUS'}`);
@@ -258,11 +302,8 @@
     if (foundIndex === -1) return;
     dom.comboInput.focus();
     dom.comboInput.setSelectionRange(start, end);
-    const cs = getComputedStyle(dom.comboInput);
-    const lineHeight = parseFloat(cs.lineHeight) || 16;
-    const padTop = parseFloat(cs.paddingTop) || 0;
-    const targetTop = padTop + foundIndex * lineHeight;
-    dom.comboInput.scrollTop = Math.max(0, targetTop - dom.comboInput.clientHeight / 2);
+    const lineHeight = 20;
+    dom.comboInput.scrollTop = Math.max(0, (foundIndex - 2) * lineHeight);
   }
 
   function applySnapshot(snapshot) {
@@ -280,9 +321,11 @@
 
   function applyJobUpdate(job) {
     const prev = state.jobs.get(job.id);
-    if (!prev) state.order.push(job.id);
-    if (prev && prev.status !== job.status) detailCache.delete(job.id);
     state.jobs.set(job.id, job);
+    if (!state.order.includes(job.id)) {
+      state.order.push(job.id);
+    }
+    if (prev && prev.status !== job.status) detailCache.delete(job.id);
     renderJobs();
     renderOutputs();
     if (state.activeJobId === job.id) renderLog(job.id);
@@ -347,6 +390,7 @@
       new_password: dom.newPassword.value.trim() || null,
       check_plan_only: mode === 'check_plan',
       skip_password_change: mode === 'session_only',
+      change_2fa_only: mode === 'change_2fa',
     };
     if (mode === 'change_password' && !body.new_password) {
       const ok = await Dialog.confirm({

@@ -69,6 +69,7 @@ class ChangePasswordJob:
     new_password: str | None = None
     check_plan_only: bool = False
     skip_password_change: bool = False
+    change_2fa_only: bool = False
     status: JobStatus = "queued"
     log_lines: list[str] = field(default_factory=list)
     error: str | None = None
@@ -84,6 +85,8 @@ class ChangePasswordJob:
     def mode(self) -> str:
         if self.check_plan_only:
             return "check_plan"
+        if self.change_2fa_only:
+            return "change_2fa"
         if self.skip_password_change:
             return "session_only"
         return "change_password"
@@ -115,7 +118,7 @@ class ChangePasswordJob:
         data["session_data"] = self.session_data
         data["current_password"] = self.current_password
         data["new_password"] = self.new_password
-        data["secret"] = self.secret
+        data["secret"] = (self.session_data or {}).get("new_secret") or (self.session_data or {}).get("secret") or self.secret
         return data
 
 
@@ -226,6 +229,7 @@ class ChangePasswordJobManager:
         new_password: str | None = None,
         check_plan_only: bool = False,
         skip_password_change: bool = False,
+        change_2fa_only: bool = False,
     ) -> list[ChangePasswordJob]:
         existing = {
             job.email.lower()
@@ -285,7 +289,7 @@ class ChangePasswordJobManager:
             existing.add(email.lower())
 
             resolved_new_password = str(new_password or "").strip() or None
-            if not resolved_new_password and not check_plan_only and not skip_password_change:
+            if not resolved_new_password and not check_plan_only and not skip_password_change and not change_2fa_only:
                 resolved_new_password = _generate_new_password()
 
             job = ChangePasswordJob(
@@ -297,6 +301,7 @@ class ChangePasswordJobManager:
                 new_password=resolved_new_password,
                 check_plan_only=check_plan_only,
                 skip_password_change=skip_password_change,
+                change_2fa_only=change_2fa_only,
             )
             self.jobs[job.id] = job
             self.order.append(job.id)
@@ -423,7 +428,7 @@ class ChangePasswordJobManager:
             self._broadcast_job(job)
 
             proxy = await self._begin_job_proxy(job)
-            if job.new_password and not job.check_plan_only and not job.skip_password_change:
+            if job.new_password and not job.check_plan_only and not job.skip_password_change and not job.change_2fa_only:
                 self._job_log(job, "[chpwd] new password prepared")
 
             result = await asyncio.wait_for(
@@ -433,6 +438,7 @@ class ChangePasswordJobManager:
                     new_password=job.new_password or "",
                     check_plan_only=job.check_plan_only,
                     skip_password_change=job.skip_password_change,
+                    change_2fa_only=job.change_2fa_only,
                     secret=job.secret,
                     initial_session=job.initial_session,
                     proxy=proxy,
@@ -441,6 +447,8 @@ class ChangePasswordJobManager:
                 timeout=self._job_timeout,
             )
             job.session_data = result
+            if result.get("new_secret"):
+                job.secret = result.get("new_secret")
             job.status = "success"
             job.finished_at = time.time()
             self._broadcast_job(job)

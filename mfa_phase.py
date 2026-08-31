@@ -461,6 +461,85 @@ async def _check_mfa_info(session: AsyncSession, *, access_token: str, log) -> d
         return {}
 
 
+async def _unenroll_factor(session: AsyncSession, *, access_token: str, factor_id: str, log) -> bool:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    endpoints = [
+        ("DELETE", f"{_BASE}/accounts/mfa/user/factors/{factor_id}", None),
+        ("POST", f"{_BASE}/accounts/mfa/user/unenroll", {"factor_id": factor_id}),
+        ("POST", f"{_BASE}/accounts/mfa/user/delete_factor", {"factor_id": factor_id}),
+        ("DELETE", f"{_BASE}/accounts/mfa/factors/{factor_id}", None),
+    ]
+    for method, url, body in endpoints:
+        try:
+            if method == "DELETE":
+                r = await session.delete(url, headers=headers, timeout=15.0)
+            else:
+                r = await session.post(url, headers=headers, json=body, timeout=15.0)
+            if r.status_code in (200, 204):
+                log(f"[mfa] unenroll factor {factor_id} OK via {method}")
+                return True
+        except Exception as exc:
+            log(f"[mfa] unenroll factor {method} {url} error: {exc}")
+    return False
+
+
+async def change_or_enable_2fa_in_session(
+    session: AsyncSession,
+    *,
+    access_token: str,
+    cookies: list[dict[str, Any]] | None = None,
+    log=print,
+) -> dict[str, Any]:
+    """Bật 2FA mới hoặc đổi 2FA (hủy 2FA cũ nếu có rồi enroll + activate mới)."""
+    # 1. Check existing mfa info & unenroll old factors if any
+    try:
+        mfa_info = await _check_mfa_info(session, access_token=access_token, log=log)
+        factors = mfa_info.get("factors") or []
+        if isinstance(factors, list):
+            for f in factors:
+                fid = f.get("id") if isinstance(f, dict) else None
+                if fid:
+                    log(f"[mfa] phát hiện 2FA factor cũ ({fid}), đang tiến hành gỡ bỏ...")
+                    await _unenroll_factor(session, access_token=access_token, factor_id=fid, log=log)
+    except Exception as exc:
+        log(f"[mfa] check/unenroll old factor warning: {exc}")
+
+    # 2. Enroll new 2FA
+    enroll_data, access_token = await _enroll_totp(
+        session, access_token=access_token, cookies=cookies, log=log
+    )
+    secret = enroll_data.get("secret")
+    factor = enroll_data.get("factor") or {}
+    factor_id = factor.get("id") or enroll_data.get("factor_id")
+    session_id = enroll_data.get("session_id") or factor_id
+
+    if not secret or not factor_id:
+        raise MfaError(f"Enroll response thiếu secret hoặc factor_id: {enroll_data}")
+
+    # 3. Generate first TOTP code and activate
+    first_code = generate_code(secret)
+    log(f"[mfa] kích hoạt 2FA mới (factor_id={factor_id}) với mã TOTP: {first_code}")
+    await _activate_enrollment(
+        session,
+        access_token=access_token,
+        factor_id=factor_id,
+        session_id=session_id,
+        code=first_code,
+        log=log,
+    )
+
+    return {
+        "secret": secret,
+        "factor_id": factor_id,
+        "session_id": session_id,
+        "first_code": first_code,
+        "activated": True,
+    }
+
+
 async def enable_2fa(
     *,
     access_token: str,
