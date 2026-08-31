@@ -891,41 +891,82 @@ body {
   text-overflow: ellipsis;
 }
 
-.plan-badge {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  line-height: 1;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg-dim);
+.job-badges-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
 }
 
-.plan-badge.plan-free {
-  background: rgba(148, 163, 184, 0.12);
-  color: var(--fg-mute);
-  border-color: var(--border);
+.plan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 12px;
+  border-radius: 9999px;
+  line-height: 1.2;
+}
+
+.plan-badge.plan-offer-yes {
+  background: #10b981;
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+}
+
+.plan-badge.plan-err {
+  background: #ef4444;
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
 }
 
 .plan-badge.plan-plus {
-  background: linear-gradient(180deg, rgba(123, 216, 143, 0.24), rgba(123, 216, 143, 0.12));
-  color: #d9ffe2;
-  border-color: rgba(123, 216, 143, 0.8);
-  box-shadow: 0 0 0 1px rgba(123, 216, 143, 0.18), 0 0 14px rgba(123, 216, 143, 0.18);
+  background: #22c55e;
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
 }
 
-.plan-badge.plan-team,
-.plan-badge.plan-business,
-.plan-badge.plan-pro,
-.plan-badge.plan-enterprise {
-  background: rgba(74, 222, 128, 0.12);
-  color: var(--green);
-  border-color: rgba(74, 222, 128, 0.4);
+.payment-tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 12px;
+  border-radius: 9999px;
+  line-height: 1.2;
+  border: 1px solid #3f3f46;
+  background: #27272a;
+  color: #f4f4f5;
+}
+
+.payment-tag-stripe,
+.payment-tag-gpay,
+.payment-tag-applepay {
+  background: #27272a;
+  color: #f4f4f5;
+  border: 1px solid #3f3f46;
+}
+
+.payment-tag-momo {
+  background: #c026d3;
+  color: #ffffff;
+  border: none;
+  font-weight: 800;
+  box-shadow: 0 0 8px rgba(192, 38, 211, 0.4);
+}
+
+.payment-tag-link {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.35) 0%, rgba(79, 70, 229, 0.2) 100%);
+  color: #c7d2fe;
+  border: 1px solid rgba(129, 140, 248, 0.6);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
 }
 
 .job-main {

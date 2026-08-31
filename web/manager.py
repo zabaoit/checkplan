@@ -492,12 +492,13 @@ class Job:
         }
 
     def to_dict_secrets(self) -> dict[str, Any]:
-        """Chỉ password + secret + first_code + session_path. Dùng cho /api/jobs/secrets."""
+        """Chỉ password + secret + first_code + session_path + combo. Dùng cho /api/jobs/secrets."""
         return {
             "password": self.password,
             "secret": self.secret,
             "first_code": self.first_code,
             "session_path": self.session_path,
+            "combo": self.combo,
         }
 
     def to_dict_full(self) -> dict[str, Any]:
@@ -4389,6 +4390,8 @@ class UpiJobManager:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
+            if "\t" in line:
+                line = line.replace("\t", "|")
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 2:
                 jid = uuid.uuid4().hex[:12]

@@ -1,0 +1,81 @@
+payment_link.py:165: promo_campaign: bool = True,
+payment_link.py:181: if promo_campaign:
+payment_link.py:182: referer += "/?promo_campaign=plus-1-month-free"
+payment_link.py:183: payload["promo_campaign"] = {
+payment_link.py:184: "promo_campaign_id": "plus-1-month-free",
+payment_link.py:340: promo_campaign: bool,
+payment_link.py:347: promo_campaign=promo_campaign,
+payment_link.py:398: promo_campaign=True,
+payment_link.py:438: promo_campaign: bool = True,
+payment_link.py:452: promo_campaign: Apply the one-month-free campaign.
+payment_link.py:471: promo_campaign=promo_campaign,
+payment_link.py:861: """Return a validated promo trial URL plus a separate GoPay URL.
+payment_link.py:866: separate non-promo ID checkout first, then a fresh trial checkout is created
+payment_link.py:876: promo_campaign=False,
+pay_upi_http.py:318: "promo_campaign": {
+pay_upi_http.py:319: "promo_campaign_id": "plus-1-month-free",
+pay_upi_http.py:330: "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+icloud_hme\checker.py:328: eligible = [a for a in accounts if a.status in ("active", "limited")]
+icloud_hme\checker.py:330: for account in eligible:
+icloud_hme\generator.py:231: eligible (status != active sau khi tự transition tại
+icloud_hme\generator.py:320: # tiếp từ DB. Nếu không eligible → exit silent với
+icloud_hme\generator.py:474: # quota_retry_until expired) vẫn count là eligible — Pool
+icloud_hme\generator.py:480: eligible = [
+icloud_hme\generator.py:489: if not eligible:
+icloud_hme\generator.py:520: - KHÔNG raise IcloudPoolError; eligibility miss → trả None.
+icloud_hme\generator.py:526: Eligibility:
+icloud_hme\generator.py:535: Returns: AppleAccount eligible hoặc None.
+icloud_hme\pool.py:17: - Eligible = ``status='active'`` HOẶC (``status='limited'`` AND
+icloud_hme\pool.py:127: """Round-robin pick eligible profile, atomic via BEGIN IMMEDIATE.
+icloud_hme\pool.py:129: Eligibility (R2.2):
+icloud_hme\pool.py:145: IcloudPoolError: Pool exhausted (no eligible) hoặc
+icloud_hme\pool.py:163: # SELECT eligible: status='active' OR (limited AND limited_until <= now)
+icloud_hme\pool.py:193: # `hme_count >= HME_QUOTA_LIMIT` → SQL eligible filter loại
+icloud_hme\runner.py:63: # Khi action='generate', Runner rotate tuần tự qua từng profile eligible —
+icloud_hme\runner.py:386: 1.4. Do đó ``check_all`` của 1 cycle chạy tới hết list eligible
+icloud_hme\runner.py:414: # - Phân loại 2 set: ELIGIBLE (active / limited+expired /
+icloud_hme\runner.py:417: # - Reset profile_states đầu cycle: ELIGIBLE → waiting,
+icloud_hme\runner.py:419: # - For mỗi apple_id ELIGIBLE:
+icloud_hme\runner.py:503: """Rotate qua từng profile eligible 1 lần / cycle.
+icloud_hme\runner.py:533: eligible_ids: list[str] = []
+icloud_hme\runner.py:541: eligible_ids.append(acc.apple_id)
+icloud_hme\runner.py:546: eligible_ids.append(acc.apple_id)
+icloud_hme\runner.py:557: eligible_ids.append(acc.apple_id)
+icloud_hme\runner.py:576: for apple_id in eligible_ids:
+icloud_hme\runner.py:684: apple_id != eligible_ids[-1]
+icloud_hme\runner.py:704: "eligible_count": len(eligible_ids),
+test\check_upi_module_imports.py:37: PROMO,
+test\check_upi_module_imports.py:46: assert PROMO is True
+test\probe_hosted_upi.py:7: - amount = 0 (promo free month) ?
+test\probe_hosted_upi.py:266: "promo_campaign": {
+test\probe_hosted_upi.py:267: "promo_campaign_id": "plus-1-month-free",
+test\probe_hosted_upi.py:276: "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+test\probe_upi_next_action.py:109: _log("3/6", f"⚠ amount={amount} != 0 (promo không áp?) — vẫn thử confirm.")
+test\probe_upi_qr.py:10: UPI_PROMO=0
+test\probe_upi_qr.py:150: def _is_no_free_offer(promo: bool, amount: int) -> bool:
+test\probe_upi_qr.py:151: return promo and amount > 0
+test\probe_upi_qr.py:529: promo: bool,
+test\probe_upi_qr.py:546: if promo:
+test\probe_upi_qr.py:547: referer = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+test\probe_upi_qr.py:548: body["promo_campaign"] = {
+test\probe_upi_qr.py:549: "promo_campaign_id": "plus-1-month-free",
+test\probe_upi_qr.py:564: log(f"  [2/6] POST /backend-api/payments/checkout promo={promo} proxy={'yes' if proxies else 'no'}")
+test\probe_upi_qr.py:1031: promo = os.environ.get("UPI_PROMO", "1").strip().lower() not in {"0", "false", "no"}
+test\probe_upi_qr.py:1071: print(f"[upi-qr] promo={promo}", flush=True)
+test\probe_upi_qr.py:1104: promo=promo,
+test\probe_upi_qr.py:1121: if _is_no_free_offer(promo, amount):
+test\probe_upi_qr.py:1131: "promo": promo,
+test\probe_upi_qr.py:1271: "promo": promo,
+test\probe_upi_qr.py:1327: "promo": promo,
+test\probe_upi_qr.py:1334: "promo": promo,
+web\manager.py:4070: #   - Hardcoded: PROMO, PROXY_FROM_STEP, DO_CONFIRM, DO_APPROVE, APPROVE_DELAY,
+web\manager.py:4808: chạy lại flow để hy vọng promo / proxy / Stripe ổn hơn lần sau).
+web\upi_runner.py:8: promo=True, proxy_from_step=3, do_confirm=True, do_approve=True,
+web\upi_runner.py:142: PROMO: bool = True
+web\upi_runner.py:951: referer = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+web\upi_runner.py:952: body["promo_campaign"] = {
+web\upi_runner.py:953: "promo_campaign_id": "plus-1-month-free",
+web\upi_runner.py:1919: if PROMO and amount > 0:
+web\upi_runner.py:1921: f"amount={amount} (promo bật nhưng > 0)"))
+web\upi_runner.py:1926: error="no free offer (promo enabled but amount > 0)",
+web\upi_runner.py:2414: "PROMO", "PROXY_FROM_STEP", "DO_CONFIRM", "DO_APPROVE",

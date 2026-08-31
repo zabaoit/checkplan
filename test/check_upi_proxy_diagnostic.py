@@ -161,6 +161,8 @@ def t05_runner_diagnostic_log_format():
         ('"first_proxy"', "kv first_proxy"),
         ('"via_proxy"', "kv via_proxy"),
         ('"direct"', "kv direct"),
+        ('"login proxy override"', "log key login proxy override"),
+        ('Step 2 follows proxy_from_step', "explain checkout follows proxy policy"),
         ('"login"', "step 1 name"),
         ('"checkout"', "step 2 name"),
         ('"stripe_init"', "step 3 name"),

@@ -150,6 +150,9 @@ class WorkerMailProvider:
             from config import warn_insecure_tls
             warn_insecure_tls("mail_providers.WorkerMailProvider")
 
+    async def pre_check(self, *, log) -> None:
+        log(f"[otp:worker] pre-check OK for logs_url={self.logs_url}")
+
     @staticmethod
     def _normalize(payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
@@ -328,6 +331,17 @@ class WorkerMailProvider:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def normalize_gmail(email: str) -> str:
+    email = (email or "").strip().lower()
+    if email.endswith("@gmail.com"):
+        username, domain = email.split("@", 1)
+        username = username.replace(".", "")
+        if "+" in username:
+            username = username.split("+", 1)[0]
+        return f"{username}@{domain}"
+    return email
+
+
 class CongasMailProvider:
     """mail.congas.uk rental inbox API."""
 
@@ -340,6 +354,9 @@ class CongasMailProvider:
         if not self.rental_token:
             raise ValueError("Congas rental token is required")
 
+    async def pre_check(self, *, log) -> None:
+        log(f"[otp:congas] pre-check OK for email={self.email}")
+
     @staticmethod
     def _normalize(payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
@@ -349,9 +366,10 @@ class CongasMailProvider:
         return []
 
     def _url(self) -> str:
+        normalized_email = normalize_gmail(self.email)
         return (
             f"{self.base_url}/api/rentals/inbox"
-            f"?email={quote(self.email)}&rentalToken={quote(self.rental_token)}"
+            f"?email={quote(normalized_email)}&rentalToken={quote(self.rental_token)}"
         )
 
     async def poll_otp(
@@ -1040,28 +1058,31 @@ class GmailAdvancedProvider:
     def parse_line(cls, line: str) -> tuple[str, str]:
         """Parse line → (email, api_url).
 
-        Hỗ trợ 2 format:
-            - email|api_url  (cũ)
-            - api_url        (chỉ paste link, email sẽ lấy từ API response)
+        Hỗ trợ các format:
+            - email|api_url
+            - api_url (chỉ paste link)
+            - email|rental_token (tự build URL rentals/inbox)
+            - email|view_token (tự build congas_logs:// URL)
 
         Raises GmailAdvancedParseError nếu format sai.
         """
         stripped = line.strip()
-        # Format 1: chỉ URL (bắt đầu bằng http)
         if stripped.startswith(("http://", "https://")):
             return "", stripped
-        # Format 2: email|url
         parts = stripped.split("|", 1)
         if len(parts) != 2:
             raise GmailAdvancedParseError(
-                f"format phải là email|api_url hoặc chỉ api_url, nhận: {line[:80]}"
+                f"format phải là email|api_url hoặc email|token, nhận: {line[:80]}"
             )
         email_part = parts[0].strip()
         url_part = parts[1].strip()
         if not email_part or "@" not in email_part:
             raise GmailAdvancedParseError(f"email không hợp lệ: {email_part!r}")
         if not url_part.startswith(("http://", "https://")):
-            raise GmailAdvancedParseError(f"api_url phải bắt đầu bằng http(s)://: {url_part[:60]}")
+            if len(url_part) == 12 and url_part.isalnum():
+                url_part = f"https://mail.congas.uk/api/rentals/inbox?email={email_part}&rentalToken={url_part}"
+            else:
+                url_part = f"congas_logs://mail.congas.uk/api/logs?mail={email_part}&token={url_part}"
         return email_part, url_part
 
     async def pre_check(self, *, log) -> None:
@@ -1369,7 +1390,30 @@ def build_provider_outlook(
 
 def build_provider_gmail_advanced(
     *, email: str, api_url: str,
-) -> GmailAdvancedProvider:
+) -> MailProvider:
+    if "mail.congas.uk" in api_url or api_url.startswith("congas_logs://"):
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(api_url)
+        params = parse_qs(parsed.query)
+        url_email = params.get("email", params.get("mail", [""]))[0].strip()
+        rental_token = params.get("rentalToken", [""])[0].strip()
+        token = params.get("token", [""])[0].strip()
+        resolved_email = email
+        if (not resolved_email or resolved_email == "pending@gmail-advanced.local") and url_email:
+            resolved_email = url_email
+        if parsed.scheme == "congas_logs" or token:
+            logs_url = f"https://{parsed.netloc}{parsed.path}"
+            return WorkerMailProvider(
+                logs_url=logs_url,
+                api_key=token,
+                insecure_tls=False
+            )
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        return build_provider_congas(
+            email=resolved_email,
+            rental_token=rental_token,
+            base_url=base_url,
+        )
     return GmailAdvancedProvider(api_url=api_url, email=email)
 
 

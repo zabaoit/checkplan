@@ -124,8 +124,7 @@ def _is_tls_error(exc: BaseException) -> bool:
 
 
 def _is_cloudflare_block_error(exc: BaseException) -> bool:
-    """Detect HTTP 403 từ chatgpt.com prime/csrf → Cloudflare bot-management
-    flag JA3/JA4 fingerprint cụ thể.
+    """Detect HTTP 403 từ auth bootstrap → Cloudflare bot-management flag.
 
     CF rate-limit / fingerprint-flag thường target 1 impersonate. Rotate sang
     Chrome 142 / 136 (chain ``_IMPERSONATE_CANDIDATES``) thường bypass được.
@@ -135,9 +134,9 @@ def _is_cloudflare_block_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     if "http 403" not in msg:
         return False
-    # Restrict marker để 403 từ endpoint khác (vd Stripe, OAuth) KHÔNG nhầm
-    # trigger rotation — chỉ chatgpt.com prime/csrf cần fingerprint rotation.
-    markers = ("prime chatgpt session", "csrf fetch")
+    # Restrict marker để 403 từ endpoint nghiệp vụ khác (vd Stripe) KHÔNG nhầm
+    # trigger rotation. OAuth init cũng thuộc bootstrap và an toàn để restart.
+    markers = ("prime chatgpt session", "csrf fetch", "oauth init")
     return any(m in msg for m in markers)
 
 
@@ -448,19 +447,56 @@ def _step_auth_url(session, csrf_token: str, log: Callable, device_id: str = "",
     return auth_url
 
 
-def _step_oauth_init(session, auth_url: str, log: Callable) -> str:
-    """Step 3: Follow authorize URL → extract device_id from oai-did cookie."""
-    log("[request] [3/9] OAuth init...")
+def _navigate_oauth_authorize(session, auth_url: str, log: Callable) -> Any:
+    """Navigate authorize URL và chỉ return khi auth state đã khởi tạo.
+
+    Cloudflare có thể trả 403 ở lần GET đầu nhưng đồng thời cấp ``__cf_bm``.
+    Phải retry trên CHÍNH cookie jar đó; tạo session mới sẽ vứt cookie warm và
+    làm ``authorize/continue`` phía sau trả 409 ``invalid_state``.
+    """
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://chatgpt.com/auth/login",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Referer": "https://chatgpt.com/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-User": "?1",
         "User-Agent": USER_AGENT,
         "sec-ch-ua": SEC_CH_UA,
         "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
         "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
     }
-    session.get(auth_url, headers=headers, timeout=30, allow_redirects=True)
+
+    response = None
+    for attempt in range(1, 4):
+        response = session.get(
+            auth_url,
+            headers=headers,
+            timeout=30,
+            allow_redirects=True,
+        )
+        if response.status_code != 403:
+            break
+        if attempt < 3:
+            log(
+                f"[request] OAuth init HTTP 403 — warm-retry cùng session "
+                f"({attempt}/3)..."
+            )
+
+    if response is None or response.status_code != 200:
+        status = response.status_code if response is not None else "?"
+        raise RequestPhaseError(f"OAuth init failed: HTTP {status}")
+    return response
+
+
+def _step_oauth_init(session, auth_url: str, log: Callable) -> str:
+    """Step 3: Follow authorize URL → extract device_id from oai-did cookie."""
+    log("[request] [3/9] OAuth init...")
+    _navigate_oauth_authorize(session, auth_url, log)
 
     # Extract device_id from cookies
     device_id = ""

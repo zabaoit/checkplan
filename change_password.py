@@ -36,6 +36,17 @@ _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
 class ChangePasswordError(Exception):
     """Đổi mật khẩu hoặc refresh session thất bại."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        committed: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.committed = committed
+
 
 def _base_headers(*, referer: str, accept: str) -> dict[str, str]:
     return {
@@ -65,7 +76,169 @@ def _safe_response_detail(resp: Any) -> str:
     return text[:160]
 
 
+_TRANSIENT_HTTP_STATUS = frozenset({403, 408, 425, 429, 500, 502, 503, 504})
+_SESSION_REQUEST_ATTEMPTS = 3
+
+
+def _is_transient_status(status: int) -> bool:
+    return int(status) in _TRANSIENT_HTTP_STATUS
+
+
+def _is_transient_error_text(message: str) -> bool:
+    lowered = str(message or "").lower()
+    if "invalid_auth_step" in lowered or "invalid_state" in lowered:
+        return True
+    return any(
+        f"http {status}" in lowered
+        for status in _TRANSIENT_HTTP_STATUS
+    )
+
+
+async def _get_with_warm_retry(
+    sess: Any,
+    url: str,
+    *,
+    headers: dict[str, str],
+    log: LogFn,
+    label: str,
+    allow_redirects: bool = True,
+    timeout: float = 30.0,
+) -> Any:
+    """GET có retry ngắn trên cùng cookie jar cho Cloudflare transient 403."""
+    response = None
+    for attempt in range(1, _SESSION_REQUEST_ATTEMPTS + 1):
+        response = await sess.get(
+            url,
+            headers=headers,
+            allow_redirects=allow_redirects,
+            timeout=timeout,
+        )
+        if not _is_transient_status(response.status_code) or attempt >= _SESSION_REQUEST_ATTEMPTS:
+            return response
+        delay = float(attempt)
+        log(
+            f"[chpwd] {label} HTTP {response.status_code}; "
+            f"warm-retry cùng session sau {delay:g}s "
+            f"({attempt}/{_SESSION_REQUEST_ATTEMPTS})"
+        )
+        await asyncio.sleep(delay)
+    return response
+
+
+async def _post_with_warm_retry(
+    sess: Any,
+    url: str,
+    *,
+    headers: dict[str, str],
+    log: LogFn,
+    label: str,
+    data: Any = None,
+    json_body: Any = None,
+    timeout: float = 30.0,
+) -> Any:
+    """POST bootstrap có retry 403; không dùng cho password/reset hoặc MFA verify."""
+    response = None
+    for attempt in range(1, _SESSION_REQUEST_ATTEMPTS + 1):
+        kwargs: dict[str, Any] = {
+            "headers": headers,
+            "timeout": timeout,
+        }
+        if data is not None:
+            kwargs["data"] = data
+        if json_body is not None:
+            kwargs["json"] = json_body
+        response = await sess.post(url, **kwargs)
+        if response.status_code != 403 or attempt >= _SESSION_REQUEST_ATTEMPTS:
+            return response
+        delay = float(attempt)
+        log(
+            f"[chpwd] {label} HTTP 403; warm-retry cùng session sau {delay:g}s "
+            f"({attempt}/{_SESSION_REQUEST_ATTEMPTS})"
+        )
+        await asyncio.sleep(delay)
+    return response
+
+
 async def change_password(
+    *,
+    email: str,
+    current_password: str,
+    new_password: str,
+    check_plan_only: bool = False,
+    skip_password_change: bool = False,
+    secret: str | None = None,
+    initial_session: str | dict[str, Any] | None = None,
+    proxy: str | None = None,
+    log: LogFn = print,
+) -> dict[str, Any]:
+    """Ổn định wrapper: retry toàn flow chỉ trước khi reset được commit."""
+    last_error: ChangePasswordError | None = None
+    for attempt in range(1, _SESSION_REQUEST_ATTEMPTS + 1):
+        try:
+            return await _change_password_once(
+                email=email,
+                current_password=current_password,
+                new_password=new_password,
+                check_plan_only=check_plan_only,
+                skip_password_change=skip_password_change,
+                secret=secret,
+                initial_session=initial_session,
+                proxy=proxy,
+                log=log,
+            )
+        except ChangePasswordError as exc:
+            last_error = exc
+            if (
+                attempt >= _SESSION_REQUEST_ATTEMPTS
+                and not initial_session
+                and not exc.committed
+                and _is_transient_error_text(str(exc))
+            ):
+                log("[chpwd] pure-request exhausted; falling back to browser login")
+                try:
+                    from session_phase import get_session_browser
+
+                    browser_session = await get_session_browser(
+                        email=email,
+                        password=current_password,
+                        secret=secret,
+                        headless=True,
+                        proxy=proxy,
+                        log=log,
+                    )
+                    return await _change_password_once(
+                        email=email,
+                        current_password=current_password,
+                        new_password=new_password,
+                        check_plan_only=check_plan_only,
+                        skip_password_change=skip_password_change,
+                        secret=secret,
+                        initial_session=browser_session,
+                        proxy=proxy,
+                        log=log,
+                    )
+                except Exception as browser_exc:
+                    raise ChangePasswordError(
+                        f"{exc}; browser fallback failed: {browser_exc}"
+                    ) from browser_exc
+            if (
+                not exc.retryable
+                or exc.committed
+                or attempt >= _SESSION_REQUEST_ATTEMPTS
+            ):
+                raise
+            delay = float(attempt * 2)
+            log(
+                f"[chpwd] retry fresh flow sau {delay:g}s "
+                f"({attempt}/{_SESSION_REQUEST_ATTEMPTS}): {exc}"
+            )
+            await asyncio.sleep(delay)
+    if last_error is not None:
+        raise last_error
+    raise ChangePasswordError("change password failed without a result")
+
+
+async def _change_password_once(
     *,
     email: str,
     current_password: str,
@@ -99,7 +272,7 @@ async def change_password(
             cookies = cookies_from_initial_session(initial_session)
             set_cookies(sess, cookies)
             log(f"[chpwd] initial session provided; injecting {len(cookies)} cookie(s)")
-            await get_home(sess)
+            await get_home(sess, log)
             await fetch_session(sess, email, log, proxy=proxy, label="initial")
             log("[chpwd] initial session OK; skipped login")
         else:
@@ -113,7 +286,11 @@ async def change_password(
                     log=log,
                 )
             except SessionError as exc:
-                raise ChangePasswordError(f"login failed: {exc}") from exc
+                detail = f"login failed: {exc}"
+                raise ChangePasswordError(
+                    detail,
+                    retryable=_is_transient_error_text(detail),
+                ) from exc
 
             cookies = normalize_session_cookies(login_session.get("__cookies"))
             if not has_session_cookie(cookies):
@@ -122,7 +299,7 @@ async def change_password(
             if not has_session_cookie(cookies):
                 raise ChangePasswordError("login succeeded but session cookies are missing")
             set_cookies(sess, cookies)
-            await get_home(sess)
+            await get_home(sess, log)
             await fetch_session(sess, email, log, proxy=proxy, label="login")
             log("[chpwd] login OK via existing session flow")
 
@@ -145,7 +322,14 @@ async def change_password(
             secret=secret,
             log=log,
         )
-        return await fetch_session(sess, email, log, proxy=proxy, label="refreshed")
+        return await fetch_session(
+            sess,
+            email,
+            log,
+            proxy=proxy,
+            label="refreshed",
+            committed=True,
+        )
 
 
 def cookies_from_initial_session(
@@ -348,16 +532,29 @@ def factor_id(data: dict[str, Any]) -> str:
             and factor.get("id")
         ):
             return str(factor["id"])
-    return str(payload.get("factor_id") or "")
+    payload_factor_id = str(payload.get("factor_id") or "")
+    if payload_factor_id:
+        return payload_factor_id
+    continue_url = str(data.get("continue_url") or "")
+    match = re.search(r"/mfa-challenge/([A-Za-z0-9_-]+)", continue_url)
+    return match.group(1) if match else ""
 
 
-async def get_home(sess: Any) -> None:
-    await sess.get(
+async def get_home(sess: Any, log: LogFn = print) -> None:
+    response = await _get_with_warm_retry(
+        sess,
         "https://chatgpt.com/",
         headers=_chatgpt_headers(),
+        log=log,
+        label="home",
         allow_redirects=True,
         timeout=30.0,
     )
+    if response.status_code >= 400:
+        raise ChangePasswordError(
+            f"chatgpt home HTTP {response.status_code}",
+            retryable=_is_transient_status(response.status_code),
+        )
 
 
 async def trigger_password_change_reauth(
@@ -368,13 +565,19 @@ async def trigger_password_change_reauth(
     log: LogFn,
 ) -> str:
     log("[chpwd] triggering password-change reauth via API")
-    csrf_resp = await sess.get(
+    csrf_resp = await _get_with_warm_retry(
+        sess,
         "https://chatgpt.com/api/auth/csrf",
         headers={**_chatgpt_headers(), "Accept": "application/json"},
+        log=log,
+        label="reauth csrf",
         timeout=30.0,
     )
     if csrf_resp.status_code != 200:
-        raise ChangePasswordError(f"Reauth csrf HTTP {csrf_resp.status_code}")
+        raise ChangePasswordError(
+            f"Reauth csrf HTTP {csrf_resp.status_code}",
+            retryable=_is_transient_status(csrf_resp.status_code),
+        )
     csrf_token = str(response_json(csrf_resp).get("csrfToken") or "")
     if not csrf_token:
         raise ChangePasswordError("Reauth csrf token missing")
@@ -388,7 +591,8 @@ async def trigger_password_change_reauth(
         "max_age": "0",
         "ext-oai-did": oai_did,
     })
-    resp = await sess.post(
+    resp = await _post_with_warm_retry(
+        sess,
         f"https://chatgpt.com/api/auth/signin/openai?{query}",
         headers={
             **_chatgpt_headers(),
@@ -396,6 +600,8 @@ async def trigger_password_change_reauth(
             "Content-Type": "application/x-www-form-urlencoded",
             "Origin": "https://chatgpt.com",
         },
+        log=log,
+        label="reauth signin",
         data={
             "callbackUrl": "https://chatgpt.com/",
             "csrfToken": csrf_token,
@@ -405,7 +611,8 @@ async def trigger_password_change_reauth(
     )
     if resp.status_code != 200:
         raise ChangePasswordError(
-            f"Reauth NextAuth signin HTTP {resp.status_code}: {_safe_response_detail(resp)}"
+            f"Reauth NextAuth signin HTTP {resp.status_code}: {_safe_response_detail(resp)}",
+            retryable=_is_transient_status(resp.status_code),
         )
     redirect_url = str(response_json(resp).get("url") or "")
     if "auth.openai.com" not in redirect_url:
@@ -415,24 +622,40 @@ async def trigger_password_change_reauth(
 
 
 async def open_password_page(sess: Any, authorize_url: str, log: LogFn) -> str:
-    resp = await sess.get(
+    resp = await _get_with_warm_retry(
+        sess,
         authorize_url,
         headers=_chatgpt_headers(),
+        log=log,
+        label="reauth authorize",
         allow_redirects=False,
         timeout=30.0,
     )
+    if resp.status_code >= 400:
+        raise ChangePasswordError(
+            f"Reauth authorize HTTP {resp.status_code}: {_safe_response_detail(resp)}",
+            retryable=_is_transient_status(resp.status_code),
+        )
     location = str(resp.headers.get("Location") or resp.headers.get("location") or "")
     password_page_url = (
         urljoin(authorize_url, location)
         if location
         else "https://auth.openai.com/log-in/password"
     )
-    final_resp = await sess.get(
+    final_resp = await _get_with_warm_retry(
+        sess,
         password_page_url,
         headers=_chatgpt_headers(referer=authorize_url),
+        log=log,
+        label="password page",
         allow_redirects=True,
         timeout=30.0,
     )
+    if final_resp.status_code >= 400:
+        raise ChangePasswordError(
+            f"Password page HTTP {final_resp.status_code}",
+            retryable=_is_transient_status(final_resp.status_code),
+        )
     final_url = str(getattr(final_resp, "url", "") or password_page_url)
     if "/log-in/password" not in password_page_url and "/log-in/password" not in final_url:
         raise ChangePasswordError(
@@ -459,9 +682,43 @@ async def change_password_after_reauth(
     verify_data = response_json(verify_resp)
     store_client_auth_session(sess, verify_data)
     if verify_resp.status_code != 200:
-        raise ChangePasswordError(
+        verify_detail = (
             f"Current password verify HTTP {verify_resp.status_code}: "
             f"{_safe_response_detail(verify_resp)}"
+        )
+        raise ChangePasswordError(
+            verify_detail,
+            retryable=_is_transient_error_text(verify_detail),
+        )
+
+    verify_page = verify_data.get("page") if isinstance(verify_data.get("page"), dict) else {}
+    verify_page_type = str(verify_page.get("type") or "")
+    verify_continue_url = str(verify_data.get("continue_url") or "")
+    log(
+        f"[chpwd] post-password → page_type={verify_page_type!r} "
+        f"continue_url={verify_continue_url[:80]!r}"
+    )
+
+    # Account policy không đồng nhất: có account yêu cầu MFA trước khi state
+    # machine cho phép POST password/reset, account khác nhận password mới trước
+    # rồi mới challenge MFA. Phải drive đúng state trả về từ password/verify.
+    requires_pre_reset_mfa = (
+        "mfa" in verify_page_type.lower()
+        or "/mfa-challenge/" in verify_continue_url.lower()
+    )
+    if requires_pre_reset_mfa:
+        pre_reset_factor_id = factor_id(verify_data)
+        if not pre_reset_factor_id:
+            raise ChangePasswordError(
+                "MFA required before password reset but challenge ID is missing"
+            )
+        await complete_mfa(
+            sess,
+            factor_id=pre_reset_factor_id,
+            secret=secret,
+            step="reauth",
+            log=log,
+            consume_callback=False,
         )
 
     log("[chpwd] API reset: submitting new password")
@@ -478,26 +735,49 @@ async def change_password_after_reauth(
     reset_data = response_json(reset_resp)
     store_client_auth_session(sess, reset_data)
     if reset_resp.status_code != 200:
+        reset_body_lower = str(getattr(reset_resp, "text", "") or "").lower()
+        reset_detail = (
+            f"Password reset HTTP {reset_resp.status_code}: "
+            f"{_safe_response_detail(reset_resp)}"
+        )
         raise ChangePasswordError(
-            f"Password reset HTTP {reset_resp.status_code}: {_safe_response_detail(reset_resp)}"
+            reset_detail,
+            # Reset là thao tác state-changing: chỉ retry khi server xác nhận
+            # chưa vào đúng auth step (400/409), không retry mù HTTP 403/5xx
+            # vì response có thể bị proxy/Cloudflare che sau khi đã commit.
+            retryable=(
+                "invalid_auth_step" in reset_body_lower
+                or "invalid_state" in reset_body_lower
+            ),
         )
 
-    callback_url = str(reset_data.get("continue_url") or "")
-    if "chatgpt.com/api/auth/callback/openai" in callback_url:
-        await nextauth_callback(sess, callback_url, log)
+    # Từ đây password/reset đã trả 200: không được retry toàn flow, tránh gửi
+    # lại mật khẩu mới nếu chỉ callback/session refresh bị lỗi.
+    try:
+        callback_url = str(reset_data.get("continue_url") or "")
+        if "chatgpt.com/api/auth/callback/openai" in callback_url:
+            await nextauth_callback(sess, callback_url, log)
+            log("[chpwd] password changed via API")
+            return
+        mfa_factor_id = factor_id(reset_data)
+        if not mfa_factor_id:
+            raise ChangePasswordError("Password reset did not return callback or MFA factor")
+        await complete_mfa(
+            sess,
+            factor_id=mfa_factor_id,
+            secret=secret,
+            step="reset",
+            log=log,
+        )
         log("[chpwd] password changed via API")
-        return
-    mfa_factor_id = factor_id(reset_data)
-    if not mfa_factor_id:
-        raise ChangePasswordError("Password reset did not return callback or MFA factor")
-    await complete_mfa(
-        sess,
-        factor_id=mfa_factor_id,
-        secret=secret,
-        step="reset",
-        log=log,
-    )
-    log("[chpwd] password changed via API")
+    except ChangePasswordError as exc:
+        if exc.committed:
+            raise
+        raise ChangePasswordError(
+            str(exc),
+            retryable=exc.retryable,
+            committed=True,
+        ) from exc
 
 
 async def password_verify(sess: Any, password: str, *, referer: str) -> Any:
@@ -520,7 +800,8 @@ async def complete_mfa(
     secret: str | None,
     step: str,
     log: LogFn,
-) -> None:
+    consume_callback: bool = True,
+) -> dict[str, Any]:
     if not secret:
         raise ChangePasswordError(f"2FA required at {step} but no secret provided")
     log(f"[chpwd] MFA at {step}; issuing TOTP challenge")
@@ -538,7 +819,8 @@ async def complete_mfa(
     )
     if issue_resp.status_code != 200:
         raise ChangePasswordError(
-            f"MFA issue HTTP {issue_resp.status_code}: {_safe_response_detail(issue_resp)}"
+            f"MFA issue HTTP {issue_resp.status_code}: {_safe_response_detail(issue_resp)}",
+            retryable=_is_transient_status(issue_resp.status_code),
         )
 
     remaining = time_remaining()
@@ -565,12 +847,19 @@ async def complete_mfa(
     store_client_auth_session(sess, data)
     if verify_resp.status_code != 200:
         raise ChangePasswordError(
-            f"MFA verify HTTP {verify_resp.status_code}: {_safe_response_detail(verify_resp)}"
+            f"MFA verify HTTP {verify_resp.status_code}: {_safe_response_detail(verify_resp)}",
+            retryable=_is_transient_status(verify_resp.status_code),
         )
+    log(f"[chpwd] MFA at {step}; verified")
+
+    if not consume_callback:
+        return data
+
     callback_url = str(data.get("continue_url") or "")
     if "chatgpt.com/api/auth/callback/openai" not in callback_url:
         raise ChangePasswordError(f"MFA at {step} did not return callback URL")
     await nextauth_callback(sess, callback_url, log)
+    return data
 
 
 async def nextauth_callback(sess: Any, callback_url: str, log: LogFn) -> None:
@@ -584,7 +873,156 @@ async def nextauth_callback(sess: Any, callback_url: str, log: LogFn) -> None:
         raise ChangePasswordError(
             f"NextAuth callback HTTP {resp.status_code}: {_safe_response_detail(resp)}"
         )
-    log("[chpwd] NextAuth callback accepted")
+
+
+def _inspect_backend_checkout_gpay(raw_data: dict[str, Any], log_fn: LogFn) -> str:
+    """Inspect backend checkout response JSON for payment configuration & GPay support.
+
+    Returns 3-state status:
+        - "GPAY_SUPPORTED"
+        - "GPAY_NOT_SUPPORTED"
+        - "GPAY_UNKNOWN"
+    """
+    if not isinstance(raw_data, dict):
+        log_fn("[checkout-debug] session created: false (raw_data invalid)")
+        return "GPAY_UNKNOWN"
+
+    try:
+        session_id = str(raw_data.get("checkout_session_id") or raw_data.get("id") or "unknown")
+        log_fn(f"[checkout-debug] session created: true")
+        log_fn(f"[checkout-debug] session id: {session_id}")
+
+        target_keys = {
+            "payment_method_types",
+            "payment_method_configuration",
+            "payment_method_configuration_details",
+            "payment_method_options",
+            "payment_methods",
+            "wallet",
+            "google_pay",
+            "googlepay",
+        }
+
+        found_paths: list[tuple[str, Any]] = []
+
+        def _traverse(obj: Any, current_path: str):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    new_path = f"{current_path}.{k}" if current_path else k
+                    if k.lower() in target_keys:
+                        found_paths.append((new_path, v))
+                    _traverse(v, new_path)
+            elif isinstance(obj, list):
+                for idx, item in enumerate(obj):
+                    new_path = f"{current_path}[{idx}]"
+                    _traverse(item, new_path)
+
+        _traverse(raw_data, "")
+
+        log_fn("[checkout-debug] payment-related paths:")
+        if not found_paths:
+            log_fn("  (none found)")
+        else:
+            for path, val in found_paths:
+                log_fn(f"  {path} = {val}")
+
+        pm_types = raw_data.get("payment_method_types")
+        pm_config = raw_data.get("payment_method_configuration")
+        pm_config_details = raw_data.get("payment_method_configuration_details")
+
+        log_fn(f"[checkout-debug] payment_method_types: {pm_types}")
+        log_fn(f"[checkout-debug] payment_method_configuration: {pm_config}")
+        log_fn(f"[checkout-debug] payment_method_configuration_details: {pm_config_details}")
+
+        # Check explicit payment_method_types array
+        if isinstance(pm_types, list):
+            pm_types_lower = [str(x).lower() for x in pm_types]
+            if any(x in pm_types_lower for x in ("google_pay", "googlepay", "gpay")):
+                log_fn("[checkout-debug] final gpay status: GPAY_SUPPORTED")
+                return "GPAY_SUPPORTED"
+
+        # Check explicit google_pay dict/bool in found paths
+        for path, val in found_paths:
+            key = path.split(".")[-1].lower()
+            if key in ("google_pay", "googlepay", "gpay"):
+                if val is True or (isinstance(val, str) and val.lower() in ("enabled", "auto", "active", "true")):
+                    log_fn("[checkout-debug] final gpay status: GPAY_SUPPORTED")
+                    return "GPAY_SUPPORTED"
+                if val is False or (isinstance(val, str) and val.lower() in ("disabled", "false")):
+                    log_fn("[checkout-debug] final gpay status: GPAY_NOT_SUPPORTED")
+                    return "GPAY_NOT_SUPPORTED"
+
+        log_fn("[checkout-debug] final gpay status: GPAY_UNKNOWN")
+        return "GPAY_UNKNOWN"
+
+    except Exception as exc:
+        log_fn(f"[checkout-debug] inspection error: {exc}")
+        log_fn("[checkout-debug] final gpay status: GPAY_UNKNOWN")
+        return "GPAY_UNKNOWN"
+
+
+def _check_gpay_in_stripe_data(stripe_data: dict[str, Any]) -> bool:
+    if not isinstance(stripe_data, dict):
+        return False
+    return False
+
+
+def _check_gpay_in_stripe_data(stripe_data: dict[str, Any]) -> bool:
+    if not isinstance(stripe_data, dict):
+        return False
+
+    # 1. Check elements_options -> wallets / express_checkout
+    elements_options = stripe_data.get("elements_options")
+    if isinstance(elements_options, dict):
+        wallets = elements_options.get("wallets")
+        if isinstance(wallets, dict):
+            gpay_val = wallets.get("google_pay") or wallets.get("googlePay")
+            if isinstance(gpay_val, str) and gpay_val.lower() in ("auto", "always", "enabled", "on"):
+                return True
+            if isinstance(gpay_val, bool) and gpay_val:
+                return True
+            if isinstance(gpay_val, dict) and (gpay_val.get("enabled") is True or gpay_val.get("status") in ("active", "enabled")):
+                return True
+
+        express = elements_options.get("express_checkout") or elements_options.get("expressCheckout")
+        if isinstance(express, dict):
+            gpay_val = express.get("google_pay") or express.get("googlePay")
+            if isinstance(gpay_val, str) and gpay_val.lower() in ("auto", "always", "enabled", "on"):
+                return True
+            if isinstance(gpay_val, bool) and gpay_val:
+                return True
+
+    # 2. Check top-level google_pay / google_pay_enabled
+    if stripe_data.get("google_pay_enabled") is True:
+        return True
+
+    gpay_top = stripe_data.get("google_pay") or stripe_data.get("googlePay")
+    if isinstance(gpay_top, dict):
+        if gpay_top.get("enabled") is True or gpay_top.get("status") in ("active", "enabled"):
+            return True
+    elif isinstance(gpay_top, bool) and gpay_top:
+        return True
+    elif isinstance(gpay_top, str) and gpay_top.lower() in ("auto", "always", "enabled", "on"):
+        return True
+
+    # 3. Check payment_method_types / ordered_payment_method_types (ensuring not disabled)
+    disabled_types = set()
+    for d_key in ("disabled_payment_methods", "unsupported_payment_methods", "disabled_payment_method_types"):
+        d_val = stripe_data.get(d_key)
+        if isinstance(d_val, list):
+            for x in d_val:
+                disabled_types.add(str(x).lower())
+
+    for key in ("payment_method_types", "ordered_payment_method_types"):
+        pm_types = stripe_data.get(key)
+        if isinstance(pm_types, list):
+            for pm in pm_types:
+                pm_str = str(pm).lower()
+                if any(x in pm_str for x in ["google_pay", "gpay", "paywithgoogle", "googlepay"]):
+                    if pm_str not in disabled_types:
+                        return True
+
+    return False
 
 
 async def fetch_session(
@@ -594,15 +1032,21 @@ async def fetch_session(
     *,
     proxy: str | None,
     label: str,
+    committed: bool = False,
 ) -> dict[str, Any]:
-    resp = await sess.get(
+    resp = await _get_with_warm_retry(
+        sess,
         f"https://chatgpt.com/api/auth/session?chpwd={int(time.time() * 1000)}",
         headers={**_chatgpt_headers(), "Accept": "application/json"},
+        log=log,
+        label=f"{label} session",
         timeout=30.0,
     )
     if resp.status_code != 200:
         raise ChangePasswordError(
-            f"{label} session HTTP {resp.status_code}: {_safe_response_detail(resp)}"
+            f"{label} session HTTP {resp.status_code}: {_safe_response_detail(resp)}",
+            retryable=_is_transient_status(resp.status_code),
+            committed=committed,
         )
     data = response_json(resp)
     access_token = str(data.get("accessToken") or "")
@@ -636,6 +1080,47 @@ async def fetch_session(
         data["sessionToken"] = session_token
     data["__cookies"] = cookies
     data["plan"] = plan
+
+    if label == "plan-check":
+        if plan.lower() == "plus":
+            data["plan"] = "PLUS"
+        else:
+            log("[chpwd] checking GPT Plus offer & payment methods...")
+            try:
+                from payment_link import check_gpt_offer_async
+                offer_res = await check_gpt_offer_async(
+                    sess,
+                    access_token,
+                    promo_campaign="plus-1-month-free",
+                    timeout=20.0,
+                )
+            except Exception as e:
+                offer_res = {"success": False, "error": str(e)}
+
+            if not offer_res.get("success") or not offer_res.get("has_trial"):
+                data["plan"] = "KHÔNG CÓ OFFER"
+                err_detail = offer_res.get("error") or "Không có offer 0đ"
+                raise ChangePasswordError(f"KHÔNG CÓ OFFER: {err_detail}")
+
+            pm_list = offer_res.get("payment_methods") or []
+            pm_labels = []
+            for pm in pm_list:
+                pm_upper = pm.upper().replace("_", " ")
+                if pm_upper in ("GOOGLE PAY", "GPAY"):
+                    if "GPAY" not in pm_labels:
+                        pm_labels.append("GPAY")
+                elif pm_upper in ("APPLE PAY", "APPLEPAY"):
+                    if "APPLE PAY" not in pm_labels:
+                        pm_labels.append("APPLE PAY")
+                elif pm_upper == "MOMO":
+                    if "MOMO" not in pm_labels:
+                        pm_labels.append("MOMO")
+
+            methods_str = ", ".join(pm_labels)
+            plan = f"CÓ OFFER ({methods_str})" if methods_str else "CÓ OFFER"
+            data["plan"] = plan
+            data["offer_details"] = offer_res
+
     log(
         f"[chpwd] session API OK ({label}): email={session_email}, "
         f"accessToken_len={len(access_token)}, sessionToken_len={len(session_token)}, "

@@ -1662,11 +1662,22 @@ async def run_upi_qr_probe(
             _proxy_steps.append(f"{s}={label}")
         else:
             _direct_steps.append(f"{s}={label}")
+    login_proxy = first_proxy if (proxy_from_step <= 1 and first_proxy) else None
     _safe_log(_fmt_step("upi", "proxy policy", "info", _fmt_kv(
         ("first_proxy", masked_first_proxy if first_proxy else "DIRECT"),
         ("via_proxy", ",".join(_proxy_steps) if _proxy_steps else "-"),
         ("direct", ",".join(_direct_steps) if _direct_steps else "-"),
     )))
+    _login_scope = "Step 1+2" if (login_proxy and proxy_from_step <= 2) else "Step 1"
+    _safe_log(_fmt_step(
+        "upi",
+        "login proxy override",
+        "info",
+        (
+            f"{masked_first_proxy if login_proxy else 'DIRECT'} -> {_login_scope} "
+            "(Step 2 follows proxy_from_step; DIRECT if no live proxy)"
+        ),
+    ))
 
     def _step_proxy_tag(step: int) -> str:
         """Format 'proxy=via ***@host:port' / 'proxy=DIRECT' cho step log.
@@ -1719,7 +1730,6 @@ async def run_upi_qr_probe(
     # với `pay_upi_http._ProxyPolicy` semantics. Step >= 2 → DIRECT (giữ
     # behavior cũ — login pure-HTTP đến auth.openai.com thường chấp nhận IP
     # host).
-    login_proxy = first_proxy if (proxy_from_step <= 1 and first_proxy) else None
     for login_attempt in range(1, LOGIN_MAX_ATTEMPTS + 1):
         try:
             session_data = await get_session_pure_request(

@@ -41,6 +41,7 @@
     successPane: $('chpwd-success-pane'),
     errorPane: $('chpwd-error-pane'),
     btnCopySuccess: $('chpwd-btn-copy-success'),
+    btnExportCsv: $('chpwd-btn-export-csv'),
     btnCopyError: $('chpwd-btn-copy-error'),
     btnClearDone: $('chpwd-btn-clear-done'),
   };
@@ -89,9 +90,37 @@
   }
 
   function planBadge(job) {
-    const plan = job.plan ? String(job.plan).toLowerCase() : '';
-    if (!plan) return '';
-    return `<span class="plan-badge plan-${escHtml(plan)}" title="Plan: ${escHtml(plan.toUpperCase())}">${escHtml(plan.toUpperCase())}</span>`;
+    if (job.status === 'error') {
+      return `<span class="plan-badge plan-err">KHÔNG CÓ OFFER</span>`;
+    }
+
+    let planStr = job.plan ? String(job.plan) : '';
+    if (!planStr) return '';
+
+    if (planStr.toUpperCase().includes('CÓ OFFER')) {
+      const match = planStr.match(/CÓ OFFER\s*\((.*?)\)/i);
+      const methodsStr = match ? match[1] : '';
+      const methods = methodsStr ? methodsStr.split(',').map(s => s.trim()) : [];
+      
+      let html = `<span class="plan-badge plan-offer-yes">Trial · 0 đ</span>`;
+      html += `<span class="payment-tag payment-tag-stripe">Stripe</span>`;
+      
+      for (const m of methods) {
+        if (!m) continue;
+        const mUpper = m.toUpperCase();
+        if (mUpper === 'APPLE PAY' || mUpper === 'APPLEPAY') {
+          html += `<span class="payment-tag payment-tag-applepay">Apple Pay</span>`;
+        } else if (mUpper === 'GPAY' || mUpper === 'GOOGLE PAY' || mUpper === 'GOOGLEPAY') {
+          html += `<span class="payment-tag payment-tag-gpay">Google Pay</span>`;
+        } else if (mUpper === 'MOMO') {
+          html += `<span class="payment-tag payment-tag-momo">MoMo</span>`;
+        }
+      }
+      return html;
+    }
+
+    const badgeClass = `plan-${escHtml(planStr.toLowerCase())}`;
+    return `<span class="plan-badge ${badgeClass}">${escHtml(planStr.toUpperCase())}</span>`;
   }
 
   function renderJobs() {
@@ -118,6 +147,8 @@
       } else {
         actionButtons = `<button class="icon-btn" data-action="retry" data-id="${escHtml(id)}" title="Retry">${window.GptUi.icon('retry')}</button>`;
       }
+      const badges = planBadge(job);
+      const badgesRow = badges ? `<div class="job-badges-row">${badges}</div>` : '';
       return `
         <div class="${cls}" data-id="${escHtml(id)}">
           <div class="job-index">${index + 1}</div>
@@ -125,8 +156,8 @@
           <div class="job-main">
             <div class="job-email" title="${escHtml(job.email)}">
               <span class="job-email-text">${escHtml(job.email)}</span>
-              ${planBadge(job)}
             </div>
+            ${badgesRow}
           </div>
           <div class="job-duration">${escHtml(fmtDuration(job.duration))}</div>
           <div class="job-actions">
@@ -169,16 +200,16 @@
         if (detail.new_password) {
           successLines.push(`${job.email}|${detail.new_password}|${detail.secret || ''}`);
         } else {
-          successLines.push(`${job.email}|${job.plan || 'unknown'}`);
+          successLines.push(`${job.email} -> ${job.plan || 'PLUS'}`);
         }
       } else if (job.status === 'error') {
-        errorLines.push(`${job.email} -> ${job.error || 'unknown'}`);
+        errorLines.push(`${job.email} -> ${job.error || 'ERROR'}`);
       }
     }
     dom.successPane.textContent = successLines.length
       ? successLines.join('\n')
-      : 'Format: email|new_password|secret_2fa';
-    dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'No errors yet.';
+      : 'SUCCESS OUTPUT:\nemail -> CÓ OFFER (GPay, PayPal...)';
+    dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'ERROR OUTPUT:\nemail -> KHÔNG CÓ OFFER';
     void pendingLoads;
   }
 
@@ -348,6 +379,50 @@
 
   dom.btnCopySuccess.addEventListener('click', () => {
     window.GptUi.copyText(dom.successPane.textContent);
+  });
+
+  dom.btnExportCsv.addEventListener('click', async () => {
+    const successJobIds = [];
+    for (const id of state.order) {
+      const job = state.jobs.get(id);
+      if (job && job.status === 'success') {
+        successJobIds.push(id);
+      }
+    }
+    if (successJobIds.length === 0) {
+      await Dialog.alert({ message: 'No successful jobs to export.' });
+      return;
+    }
+    dom.btnExportCsv.disabled = true;
+    try {
+      const promises = successJobIds.map(id => detailFor(id));
+      const details = await Promise.all(promises);
+      const csvRows = [];
+      csvRows.push(['Email', 'Current Password', 'New Password', '2FA Secret', 'Plan'].map(v => `"${v.replace(/"/g, '""')}"`).join(','));
+      for (const d of details) {
+        const email = d.email || '';
+        const currentPassword = d.current_password || '';
+        const newPassword = d.new_password || '';
+        const secret = d.secret || '';
+        const plan = d.plan || 'unknown';
+        const row = [email, currentPassword, newPassword, secret, plan]
+          .map(v => `"${String(v).replace(/"/g, '""')}"`)
+          .join(',');
+        csvRows.push(row);
+      }
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `change_password_success_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      await Dialog.alert({ message: 'Export failed: ' + err.message });
+    } finally {
+      dom.btnExportCsv.disabled = false;
+    }
   });
 
   dom.btnCopyError.addEventListener('click', () => {

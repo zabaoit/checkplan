@@ -18,7 +18,7 @@ import re
 import shutil
 import time
 import uuid
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from _browser_retry import (
     LAUNCH_RETRY_BACKOFF as _LAUNCH_RETRY_BACKOFF,
@@ -34,6 +34,10 @@ from user_agent_profile import CAMOUFOX_OS as _CAMOUFOX_OS
 
 
 LogFn = Callable[[str], None]
+AuthenticatedBrowserAction = Callable[
+    [Any, Any, dict[str, Any]],
+    Awaitable[dict[str, Any]],
+]
 
 
 class SessionError(Exception):
@@ -59,6 +63,7 @@ async def _get_session_browser(
     proxy: str | None = None,
     tls_insecure: bool = False,
     keep_browser_open: bool = False,
+    authenticated_action: AuthenticatedBrowserAction | None = None,
     log: LogFn = print,
 ) -> dict[str, Any]:
     """Login ChatGPT bằng browser thật → return session JSON.
@@ -361,6 +366,9 @@ async def _get_session_browser(
             f"[session] ✓ done — user: "
             f"{session_data.get('user', {}).get('email', '?')}"
         )
+        if authenticated_action is not None:
+            log("[session] running authenticated browser action...")
+            return await authenticated_action(ctx, page, session_data)
         return session_data
 
     async def _run_camoufox_once(profile_dir: Any) -> dict[str, Any]:
@@ -540,6 +548,30 @@ async def get_session(
         proxy=proxy,
         tls_insecure=tls_insecure,
         keep_browser_open=keep_browser_open,
+        log=log,
+    )
+
+
+async def run_authenticated_browser_action(
+    *,
+    email: str,
+    password: str,
+    action: AuthenticatedBrowserAction,
+    secret: str | None = None,
+    headless: bool = True,
+    proxy: str | None = None,
+    log: LogFn = print,
+) -> dict[str, Any]:
+    """Login bằng browser rồi chạy action trong cùng context trước khi đóng."""
+    return await _get_session_browser(
+        email=email,
+        password=password,
+        secret=secret,
+        headless=headless,
+        proxy=proxy,
+        tls_insecure=False,
+        keep_browser_open=False,
+        authenticated_action=action,
         log=log,
     )
 
@@ -869,6 +901,7 @@ async def get_session_pure_request(
         _create_session,
         _step_csrf,
         _step_auth_url,
+        _navigate_oauth_authorize,
         _get_sentinel_token,
         _common_headers,
         _step_authorize_continue,
@@ -935,32 +968,9 @@ async def get_session_pure_request(
                         device_id=did,
                         login_hint=email if use_login_hint else "",
                     )
-                    # OAuth init: GET authorize MIMIC top-level navigation của browser
-                    # (sec-fetch-* + upgrade-insecure-requests + referer chatgpt.com/).
-                    # GET authorize KHÔNG có sec-fetch-mode=navigate sẽ bị xử như
-                    # XHR và trả thẳng SPA 200 thay vì 302 sang /log-in/password
-                    # (xác minh qua HAR thật, RID 424).
-                    r = sess.get(
-                        au,
-                        headers={
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                            "Accept-Language": "en-US,en;q=0.9",
-                            "Accept-Encoding": "gzip, deflate, br, zstd",
-                            "Referer": "https://chatgpt.com/",
-                            "Connection": "keep-alive",
-                            "Upgrade-Insecure-Requests": "1",
-                            "Sec-Fetch-Dest": "document",
-                            "Sec-Fetch-Mode": "navigate",
-                            "Sec-Fetch-Site": "cross-site",
-                            "Sec-Fetch-User": "?1",
-                            "User-Agent": USER_AGENT,
-                            "sec-ch-ua": _SEC_CH_UA,
-                            "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
-                            "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
-                        },
-                        timeout=30,
-                        allow_redirects=True,
-                    )
+                    # Helper dùng chung với signup: validate HTTP status và
+                    # warm-retry 403 trên cùng cookie jar trước khi đi tiếp.
+                    r = _navigate_oauth_authorize(sess, au, log)
                     land = str(getattr(r, "url", "") or au)
                     did = sess.cookies.get("oai-did", "") or did
                     return sess, did, au, land

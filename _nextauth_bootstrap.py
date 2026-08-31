@@ -5,7 +5,7 @@ from typing import Any
 
 
 BOOTSTRAP_JS = r"""
-async ({email, deviceId, loggingId, callbackUrl}) => {
+async ({email, deviceId, loggingId, callbackUrl, extraParams}) => {
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
     const buildParams = () => {
@@ -17,6 +17,11 @@ async ({email, deviceId, loggingId, callbackUrl}) => {
         });
         if (loggingId) params.set('auth_session_logging_id', loggingId);
         if (email) params.set('login_hint', email);
+        for (const [key, value] of Object.entries(extraParams || {})) {
+            if (value !== null && value !== undefined && String(value) !== '') {
+                params.set(key, String(value));
+            }
+        }
         return params;
     };
 
@@ -75,6 +80,7 @@ async def bootstrap_authorize_url(
     email: str | None = None,
     logging_id: str | None = None,
     callback_url: str = "https://chatgpt.com/",
+    extra_params: dict[str, str] | None = None,
 ) -> str:
     """Return the auth.openai.com authorize URL bootstrapped from chatgpt.com."""
     url = await page.evaluate(
@@ -84,6 +90,7 @@ async def bootstrap_authorize_url(
             "deviceId": device_id,
             "loggingId": logging_id or "",
             "callbackUrl": callback_url,
+            "extraParams": extra_params or {},
         },
     )
     if not isinstance(url, str) or "auth.openai.com" not in url:

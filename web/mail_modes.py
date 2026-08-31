@@ -195,14 +195,17 @@ def _build_gmail_advanced_request(
     reg_mode: str = "browser",
 ) -> SignupRequest:
     raw = parsed.raw.strip()
-    # Detect format: URL-only hoặc email|url
-    if raw.startswith(("http://", "https://")):
-        api_url = raw
-        email = ""  # sẽ fill từ pre_check
-    else:
-        parts = raw.split("|", 1)
-        email = parts[0].strip()
-        api_url = parts[1].strip() if len(parts) == 2 else ""
+    from mail_providers import GmailAdvancedProvider
+    try:
+        email, api_url = GmailAdvancedProvider.parse_line(raw)
+    except Exception:
+        if raw.startswith(("http://", "https://")):
+            api_url = raw
+            email = ""
+        else:
+            parts = raw.split("|", 1)
+            email = parts[0].strip()
+            api_url = parts[1].strip() if len(parts) == 2 else ""
 
     # Nếu email rỗng → dùng placeholder, pre_check sẽ resolve
     signup_email = email if email else "pending@gmail-advanced.local"

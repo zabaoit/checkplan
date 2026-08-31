@@ -93,6 +93,22 @@
           <input type="number" id="job-timeout" value="240" min="30" max="600" step="10" />
         </label>
       </div>
+      <div class="card-settings-row card-settings-row-mixed" style="margin-top: 10px;">
+        <label class="input-group config-field-long">
+          <span class="input-label">Loại Dấu Alias (Gmail)</span>
+          <select id="gmail-alias-type" style="padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-main);">
+            <option value="random">Ngẫu nhiên dấu chấm hoặc dấu cộng (. hoặc +)</option>
+            <option value="dot">Chỉ dấu chấm (.)</option>
+            <option value="plus">Chỉ dấu cộng (+)</option>
+            <option value="none" selected>Không sử dụng</option>
+          </select>
+        </label>
+        <label class="toggle-wrap" title="Xóa email khỏi danh sách input sau khi đăng ký thành công">
+          <input type="checkbox" id="clear-on-success-toggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Xóa email khi đăng ký xong</span>
+        </label>
+      </div>
     </div>
     <div class="card-actions">
       <button id="btn-run" class="btn btn-primary">Run</button>
@@ -263,6 +279,7 @@
   <section class="card card-success">
     <header class="card-head">
       <h2>Success output</h2>
+      <button id="chpwd-btn-export-csv" class="btn btn-ghost btn-small">Export Excel/CSV</button>
       <button id="chpwd-btn-copy-success" class="btn btn-ghost btn-small">Copy All</button>
     </header>
     <pre id="chpwd-success-pane" class="output-pane">Format: email|new_password|secret_2fa</pre>

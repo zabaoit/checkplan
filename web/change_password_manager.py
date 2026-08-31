@@ -43,12 +43,12 @@ def _extract_plan(session_data: dict[str, Any] | None) -> str | None:
     for key in ("plan", "accountPlan"):
         value = session_data.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip().lower()
+            return value.strip()
     account = session_data.get("account")
     if isinstance(account, dict):
         value = account.get("planType")
         if isinstance(value, str) and value.strip():
-            return value.strip().lower()
+            return value.strip()
     return None
 
 
@@ -113,6 +113,7 @@ class ChangePasswordJob:
         data = self.to_dict()
         data["log_lines"] = list(self.log_lines)
         data["session_data"] = self.session_data
+        data["current_password"] = self.current_password
         data["new_password"] = self.new_password
         data["secret"] = self.secret
         return data
@@ -236,6 +237,8 @@ class ChangePasswordJobManager:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
+            if "\t" in line:
+                line = line.replace("\t", "|")
             parts = line.split("|", 3)
             if len(parts) < 2:
                 job = ChangePasswordJob(
@@ -255,7 +258,12 @@ class ChangePasswordJobManager:
             email = parts[0].strip()
             current_password = parts[1].strip()
             secret = (parts[2].strip() or None) if len(parts) >= 3 else None
-            initial_session = (parts[3].strip() or None) if len(parts) >= 4 else None
+            
+            initial_session = None
+            if len(parts) >= 4:
+                val = parts[3].strip()
+                if val.startswith("{") or val.startswith("ey") or len(val) > 100:
+                    initial_session = val
             if not email or not current_password:
                 job = ChangePasswordJob(
                     id=uuid.uuid4().hex[:12],

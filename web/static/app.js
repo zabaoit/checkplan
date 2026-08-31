@@ -511,12 +511,23 @@
       const sec = secretsCache.get(id) || {};
       const password = sec.password || '';
       const secret = sec.secret || '';
+      let token = '';
+      if (sec.combo && sec.combo.includes('|')) {
+        const parts = sec.combo.split('|');
+        if (parts.length >= 2) {
+          token = parts[1].trim();
+        }
+      }
       if (j.status === 'success' && secret) {
-        successLines.push(`${j.email}|${password}|${secret}`);
+        let line = `${j.email}|${password}|${secret}`;
+        if (token) line += `|${token}`;
+        successLines.push(line);
       } else if (j.status === 'error') {
         // Signup OK nhưng 2FA fail (job.has_password=true, has_secret=false) → vẫn xuất
         if (password) {
-          successLines.push(`${j.email}|${password}|no_2fa`);
+          let line = `${j.email}|${password}|no_2fa`;
+          if (token) line += `|${token}`;
+          successLines.push(line);
         }
         errorLines.push(`${j.email}  →  ${j.error || 'unknown'}`);
       }
@@ -597,6 +608,47 @@
     persistTextarea(LS_INPUT_REG, dom.comboInput.value);
   }
 
+  function generateGmailAlias(email, type) {
+    email = email.trim();
+    if (!email.toLowerCase().endsWith('@gmail.com')) return email;
+    const parts = email.split('@');
+    let username = parts[0];
+    const domain = parts[1];
+    username = username.replace(/\./g, '');
+    if (username.includes('+')) {
+      username = username.split('+')[0];
+    }
+    if (type === 'none') {
+      return email;
+    }
+    let selectedType = type;
+    if (type === 'random') {
+      selectedType = Math.random() < 0.5 ? 'dot' : 'plus';
+    }
+    if (selectedType === 'plus') {
+      const rand = Math.floor(Math.random() * 1000) + 1;
+      return `${username}+${rand}@${domain}`;
+    }
+    if (selectedType === 'dot') {
+      if (username.length <= 1) return email;
+      let aliased = username[0];
+      let addedDot = false;
+      for (let i = 1; i < username.length; i++) {
+        if (Math.random() < 0.3 && i < username.length - 1 && aliased[aliased.length - 1] !== '.') {
+          aliased += '.';
+          addedDot = true;
+        }
+        aliased += username[i];
+      }
+      if (!addedDot && username.length > 1) {
+        const idx = Math.floor(Math.random() * (username.length - 1)) + 1;
+        aliased = username.substring(0, idx) + '.' + username.substring(idx);
+      }
+      return `${aliased}@${domain}`;
+    }
+    return email;
+  }
+
   // ── Mode → concurrency mapping ────────────────────────────────────
   // Reg cap [1, 2] — dropdown share giữa các tab có Multi (3..50). Ở Reg,
   // mọi giá trị > 2 đều silent clamp xuống 2 (yêu cầu sản phẩm).
@@ -623,9 +675,25 @@
       });
       state.maxConcurrent = target;
 
+      let finalCombos = combos;
+      const aliasType = $('gmail-alias-type')?.value || 'none';
+      if (aliasType !== 'none') {
+        const lines = combos.split('\n');
+        const processed = lines.map(line => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) return line;
+          const parts = trimmed.split('|');
+          if (parts.length >= 1) {
+            parts[0] = generateGmailAlias(parts[0], aliasType);
+          }
+          return parts.join('|');
+        });
+        finalCombos = processed.join('\n');
+      }
+
       // Build payload theo mail mode
       const payload = {
-        combos,
+        combos: finalCombos,
         default_password: dom.defaultPassword.value.trim() || null,
         mail_mode: state.currentMailMode,
         reg_mode: dom.regModeSelect.value || 'browser',
@@ -835,6 +903,30 @@
     }
     if (j.status === 'success' && (!prev || prev.status !== 'success')) {
       playSuccessAlert();
+      if (document.getElementById('clear-on-success-toggle')?.checked) {
+        const normalizeGmail = (email) => {
+          email = email.trim().toLowerCase();
+          if (!email.endsWith('@gmail.com')) return email;
+          const parts = email.split('@');
+          let username = parts[0].replace(/\./g, '');
+          if (username.includes('+')) {
+            username = username.split('+')[0];
+          }
+          return `${username}@gmail.com`;
+        };
+        const lines = dom.comboInput.value.split('\n');
+        const normalizedJobEmail = normalizeGmail(j.email);
+        const filteredLines = lines.filter(line => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) return true;
+          const parts = trimmed.split('|');
+          const originalEmail = parts[0].trim();
+          return normalizeGmail(originalEmail) !== normalizedJobEmail;
+        });
+        dom.comboInput.value = filteredLines.join('\n');
+        updateComboCount();
+        persistTextarea(LS_INPUT_REG, dom.comboInput.value);
+      }
     }
     if (j.status === 'error' && (!prev || prev.status !== 'error')) {
       playErrorAlert();

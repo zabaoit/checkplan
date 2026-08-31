@@ -16,7 +16,7 @@ import asyncio
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse, urlunparse
 
 from curl_cffi.requests import AsyncSession
@@ -74,6 +74,193 @@ class CheckoutResponse:
     client_secret: str | None = None
     url: str | None = None
     checkout_ui_mode: str | None = None
+    raw_json: dict[str, Any] = field(default_factory=dict)
+
+
+class SentinelTokenGenerator:
+    MAX_ATTEMPTS = 500000
+
+    def __init__(self, device_id: str, user_agent: str = _WINDOWS_USER_AGENT):
+        self.device_id = device_id
+        self.user_agent = user_agent
+        self.sid = str(uuid.uuid4())
+
+    @staticmethod
+    def _fnv1a_32(text: str) -> str:
+        value = 2166136261
+        for char in text:
+            value ^= ord(char)
+            value = (value * 16777619) & 0xFFFFFFFF
+        value ^= value >> 16
+        value = (value * 2246822507) & 0xFFFFFFFF
+        value ^= value >> 13
+        value = (value * 3266489909) & 0xFFFFFFFF
+        value ^= value >> 16
+        return format(value & 0xFFFFFFFF, "08x")
+
+    def _config(self) -> list:
+        import random
+        import time
+        perf_now = random.uniform(1000, 50000)
+        return [
+            "1920x1080",
+            time.strftime("%a %b %d %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)", time.gmtime()),
+            4294705152,
+            random.random(),
+            self.user_agent,
+            "https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js",
+            None, None, "en-US", "en-US,en", random.random(),
+            f"{random.choice(['vendor', 'plugins', 'hardwareConcurrency'])}-undefined",
+            random.choice(["location", "implementation", "documentURI"]),
+            random.choice(["Object", "Function", "Array"]),
+            perf_now, self.sid, "", 8, time.time() * 1000 - perf_now,
+        ]
+
+    @staticmethod
+    def _encode(data: list) -> str:
+        import base64
+        raw = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode()
+        return base64.b64encode(raw).decode()
+
+    def requirements_token(self) -> str:
+        import random
+        config = self._config()
+        config[3] = 1
+        config[9] = round(random.uniform(5, 50))
+        return "gAAAAAC" + self._encode(config)
+
+    def proof_token(self, seed: str, difficulty: str) -> str | None:
+        import time
+        started = time.time()
+        config = self._config()
+        difficulty = str(difficulty or "0")
+        for nonce in range(self.MAX_ATTEMPTS):
+            config[3] = nonce
+            config[9] = round((time.time() - started) * 1000)
+            encoded = self._encode(config)
+            if self._fnv1a_32(seed + encoded)[: len(difficulty)] <= difficulty:
+                return "gAAAAAB" + encoded + "~S"
+        return None
+
+
+async def generate_sentinel_token_async(session: AsyncSession, device_id: str) -> str:
+    generator = SentinelTokenGenerator(device_id)
+    headers = {
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Referer": "https://sentinel.openai.com/backend-api/sentinel/frame.html",
+        "Origin": "https://sentinel.openai.com",
+        "User-Agent": _WINDOWS_USER_AGENT,
+        "sec-ch-ua": _SEC_CH_UA,
+        "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+        "Accept": "application/json, text/plain, */*",
+    }
+    res = await session.post(
+        "https://sentinel.openai.com/backend-api/sentinel/req",
+        data=json.dumps({
+            "p": generator.requirements_token(),
+            "id": device_id,
+            "flow": "chatgpt_checkout",
+        }),
+        headers=headers,
+        timeout=10,
+    )
+    if res.status_code != 200:
+        raise PaymentLinkError(f"Sentinel Req failed (HTTP {res.status_code})")
+
+    challenge = res.json()
+    proof = challenge.get("proofofwork") or {}
+    if proof.get("required"):
+        token = generator.proof_token(proof.get("seed") or "", proof.get("difficulty"))
+        if not token:
+            raise PaymentLinkError("Sentinel PoW computation failed")
+    else:
+        token = generator.requirements_token()
+
+    return json.dumps({
+        "p": token, "t": "", "c": challenge["token"], "id": device_id, "flow": "chatgpt_checkout"
+    }, separators=(",", ":"))
+
+
+def parse_payment_methods(stripe_info: dict) -> list[str]:
+    elements_options = stripe_info.get("elements_options") or {}
+    pm_types = (
+        elements_options.get("payment_method_types")
+        or stripe_info.get("payment_method_types")
+        or []
+    )
+    wallets = stripe_info.get("enabled_third_party_wallets") or []
+    wallets_dict = elements_options.get("wallets") or stripe_info.get("wallets") or {}
+    express_dict = elements_options.get("express_checkout") or stripe_info.get("express_checkout") or {}
+
+    raw_methods = set()
+    for item in pm_types:
+        if item:
+            m = str(item).strip().lower().replace("-", "_").replace(" ", "_")
+            raw_methods.add(m)
+
+    for w in wallets:
+        if w:
+            w_id = w.get("id") if isinstance(w, dict) else w
+            if w_id:
+                m = str(w_id).strip().lower().replace("-", "_").replace(" ", "_")
+                raw_methods.add(m)
+
+    if isinstance(wallets_dict, dict):
+        for k, v in wallets_dict.items():
+            k_clean = str(k).strip().lower().replace("-", "_").replace(" ", "_")
+            if v is True or v in ("auto", "always", "enabled", "on") or (isinstance(v, dict) and (v.get("enabled") is True or v.get("status") in ("active", "enabled"))):
+                raw_methods.add(k_clean)
+
+    if isinstance(express_dict, dict):
+        for k, v in express_dict.items():
+            k_clean = str(k).strip().lower().replace("-", "_").replace(" ", "_")
+            if v is True or v in ("auto", "always", "enabled", "on") or (isinstance(v, dict) and (v.get("enabled") is True or v.get("status") in ("active", "enabled"))):
+                raw_methods.add(k_clean)
+
+    # For active OpenAI Stripe custom checkout sessions (status open), express checkout wallets (GPay & Apple Pay) are enabled client-side by Stripe.js
+    status = stripe_info.get("status")
+    has_customer_secret = bool(stripe_info.get("customer_session_client_secret") or stripe_info.get("client_secret"))
+    is_valid_checkout = (status == "open" or stripe_info.get("checkout_session_id") or has_customer_secret)
+
+    if is_valid_checkout:
+        raw_methods.add("google_pay")
+        raw_methods.add("apple_pay")
+
+    allowed_methods = {"google_pay", "apple_pay", "momo"}
+    filtered_methods = [m for m in raw_methods if m in allowed_methods]
+
+    return sorted(filtered_methods)
+
+
+def parse_trial_and_amount(stripe_info: dict) -> tuple[float | None, str, bool | None]:
+    total_summary = stripe_info.get("total_summary") or {}
+    amount_due = total_summary.get("due")
+    if amount_due is None:
+        amount_due = stripe_info.get("amount_total")
+
+    checkout_state = stripe_info.get("checkout_state") or {}
+    if amount_due is None and isinstance(checkout_state, dict):
+        total_obj = checkout_state.get("total") or {}
+        tot_val = (total_obj.get("total") or {}).get("minorUnitsAmount")
+        if tot_val is not None:
+            amount_due = tot_val
+
+    try:
+        amount_due = float(amount_due)
+        if amount_due.is_integer():
+            amount_due = int(amount_due)
+    except (TypeError, ValueError):
+        amount_due = None
+
+    currency = str(stripe_info.get("currency") or total_summary.get("currency") or checkout_state.get("currency") or "VND").upper()
+
+    promo_campaign = stripe_info.get("promo_campaign")
+    has_promo = bool(promo_campaign and isinstance(promo_campaign, dict) and promo_campaign.get("promo_campaign_id"))
+    
+    is_trial = (amount_due == 0) if amount_due is not None else (True if has_promo else None)
+
+    return amount_due, currency, is_trial
 
 
 @dataclass
@@ -226,7 +413,7 @@ async def _call_chatgpt_checkout(
     except Exception as exc:
         raise PaymentLinkError(f"checkout JSON parse failed: {exc} — body: {body[:300]}") from exc
 
-    session_id = data.get("checkout_session_id")
+    session_id = data.get("checkout_session_id") or data.get("cs_id")
     pub_key = data.get("publishable_key")
     if not session_id or not pub_key:
         raise PaymentLinkError(
@@ -240,7 +427,104 @@ async def _call_chatgpt_checkout(
         client_secret=data.get("client_secret"),
         url=data.get("url"),
         checkout_ui_mode=data.get("checkout_ui_mode"),
+        raw_json=data,
     )
+
+
+async def check_gpt_offer_async(
+    session: AsyncSession,
+    access_token: str,
+    promo_campaign: str = "plus-1-month-free",
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    device_id = str(uuid.uuid4())
+    try:
+        sentinel_token = await generate_sentinel_token_async(session, device_id)
+    except Exception as exc:
+        sentinel_token = None
+
+    referer = f"https://chatgpt.com/?promo_campaign={promo_campaign}"
+    payload = {
+        "entry_point": "all_plans_pricing_modal",
+        "plan_name": "chatgptplusplan",
+        "billing_details": {"country": "VN", "currency": "VND"},
+        "promo_campaign": {
+            "promo_campaign_id": promo_campaign,
+            "is_coupon_from_query_param": True,
+        },
+        "prefetch": True,
+        "checkout_ui_mode": "hosted",
+        "cancel_url": "https://chatgpt.com/#pricing",
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "Origin": "https://chatgpt.com",
+        "Referer": referer,
+        "oai-device-id": device_id,
+        "x-openai-target-path": "/backend-api/payments/checkout",
+        "x-openai-target-route": "/backend-api/payments/checkout",
+        "User-Agent": _WINDOWS_USER_AGENT,
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+        "sec-ch-ua": _SEC_CH_UA,
+        "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+    }
+    if sentinel_token:
+        headers["openai-sentinel-token"] = sentinel_token
+
+    resp = await session.post(
+        _CHECKOUT_URL,
+        headers=headers,
+        json=payload,
+        timeout=timeout,
+    )
+
+    if resp.status_code == 401:
+        return {"success": False, "error": "Access Token đã hết hạn hoặc không hợp lệ (HTTP 401)"}
+    if resp.status_code not in (200, 201):
+        return {"success": False, "error": f"Khởi tạo Checkout thất bại (HTTP {resp.status_code}): {resp.text[:150]}"}
+
+    try:
+        checkout_data = resp.json()
+    except Exception as exc:
+        return {"success": False, "error": f"Checkout JSON error: {exc}"}
+
+    session_id = checkout_data.get("checkout_session_id") or checkout_data.get("cs_id")
+    publishable_key = checkout_data.get("publishable_key")
+
+    if not session_id:
+        return {"success": False, "error": "Response checkout thiếu session_id"}
+
+    if str(session_id).startswith("cs_") and publishable_key:
+        try:
+            stripe_info = await _call_stripe_init_data(
+                session,
+                session_id,
+                publishable_key,
+                timeout=timeout,
+            )
+        except Exception:
+            stripe_info = checkout_data
+    else:
+        stripe_info = checkout_data
+
+    payment_methods = parse_payment_methods(stripe_info)
+    amount_due, currency, is_trial = parse_trial_and_amount(stripe_info)
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "has_trial": is_trial,
+        "amount_due": amount_due,
+        "currency": currency,
+        "payment_methods": payment_methods,
+        "has_momo": "momo" in payment_methods,
+        "has_gpay": "google_pay" in payment_methods,
+        "has_apple_pay": "apple_pay" in payment_methods,
+    }
 
 
 async def _call_stripe_init_data(
