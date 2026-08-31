@@ -233,6 +233,38 @@
     });
   }
 
+  function highlightInputLine(jobId) {
+    const j = state.jobs.get(jobId);
+    if (!j || !j.email) return;
+    const text = dom.comboInput.value;
+    if (!text) return;
+    const lines = text.split('\n');
+    const target = j.email.trim().toLowerCase();
+    let offset = 0;
+    let foundIndex = -1;
+    let start = 0;
+    let end = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const email = line.trim().split('|')[0].trim().toLowerCase();
+      if (email === target) {
+        foundIndex = i;
+        start = offset;
+        end = offset + line.length;
+        break;
+      }
+      offset += line.length + 1; // +1 cho ký tự '\n'
+    }
+    if (foundIndex === -1) return;
+    dom.comboInput.focus();
+    dom.comboInput.setSelectionRange(start, end);
+    const cs = getComputedStyle(dom.comboInput);
+    const lineHeight = parseFloat(cs.lineHeight) || 16;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const targetTop = padTop + foundIndex * lineHeight;
+    dom.comboInput.scrollTop = Math.max(0, targetTop - dom.comboInput.clientHeight / 2);
+  }
+
   function applySnapshot(snapshot) {
     state.order = (snapshot.jobs || []).map((job) => job.id);
     state.jobs.clear();
@@ -461,6 +493,7 @@
       state.activeJobId = row.dataset.id;
       renderJobs();
       renderLog(state.activeJobId);
+      highlightInputLine(state.activeJobId);
     }
   });
 
