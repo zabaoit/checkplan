@@ -332,9 +332,6 @@
     if (job.status === 'success' && (!prev || prev.status !== 'success') && window.GptUi.playSuccessAlert) {
       window.GptUi.playSuccessAlert();
     }
-    if (job.status === 'error' && (!prev || prev.status !== 'error') && window.GptUi.playErrorAlert) {
-      window.GptUi.playErrorAlert();
-    }
   }
 
   function applyRemove(jobId) {

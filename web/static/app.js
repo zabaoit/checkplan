@@ -96,23 +96,7 @@
     return _audioCtx;
   }
   function playErrorAlert() {
-    try {
-      const ctx = _getAudioCtx();
-      const now = ctx.currentTime;
-      // 3 beeps: 880Hz, loud, short — unmissable
-      for (let i = 0; i < 3; i++) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.type = 'square';
-        osc.frequency.value = 880;
-        gain.gain.value = 0.5;
-        const t = now + i * 0.25;
-        osc.start(t);
-        osc.stop(t + 0.15);
-      }
-    } catch (e) { /* AudioContext not available */ }
+    // Disabled error sound
   }
 
   function playSuccessAlert() {
