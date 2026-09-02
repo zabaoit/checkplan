@@ -563,11 +563,7 @@
     if (dom.momoModalEmail) dom.momoModalEmail.textContent = job.email || '-';
     if (dom.momoModalPlan) dom.momoModalPlan.textContent = job.plan || 'Trial · 0 đ (MoMo)';
 
-    let initialUrl = job.momo_url || job.checkout_url;
-    if (!initialUrl && job.offer_details && job.offer_details.session_id) {
-      initialUrl = `https://chatgpt.com/checkout/openai_llc/${job.offer_details.session_id}`;
-    }
-    initialUrl = initialUrl || '#';
+    let initialUrl = job.momo_url || job.checkout_url || '#';
     activeMomoUrl = initialUrl;
 
     if (dom.momoModalPaylink) {
@@ -577,11 +573,7 @@
     if (dom.momoModalOpenBtn) dom.momoModalOpenBtn.href = initialUrl;
 
     if (dom.momoModalImg) {
-      if (initialUrl !== '#') {
-        dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(initialUrl)}`;
-      } else {
-        dom.momoModalImg.removeAttribute('src');
-      }
+      dom.momoModalImg.removeAttribute('src');
     }
 
     if (dom.momoModal) dom.momoModal.style.display = 'flex';
@@ -589,21 +581,23 @@
 
     api(`/api/change-password/jobs/${jobId}/momo-qr`, { method: 'POST' })
       .then((res) => {
-        if (res.success && (res.momo_url || res.checkout_url)) {
-          const finalUrl = res.momo_url || res.checkout_url;
-          activeMomoUrl = finalUrl;
-          if (dom.momoModalPaylink) {
-            dom.momoModalPaylink.href = finalUrl;
-            dom.momoModalPaylink.textContent = finalUrl;
-          }
-          if (dom.momoModalOpenBtn) dom.momoModalOpenBtn.href = finalUrl;
-          if (dom.momoModalImg) {
-            dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(finalUrl)}`;
-          }
+        const finalUrl = res.momo_url || res.checkout_url || activeMomoUrl;
+        const qrData = res.qr_data || finalUrl;
+        activeMomoUrl = finalUrl;
+        if (dom.momoModalPaylink) {
+          dom.momoModalPaylink.href = finalUrl;
+          dom.momoModalPaylink.textContent = finalUrl;
+        }
+        if (dom.momoModalOpenBtn) dom.momoModalOpenBtn.href = finalUrl;
+        if (dom.momoModalImg && qrData && qrData !== '#') {
+          dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(qrData)}`;
         }
       })
       .catch((err) => {
         console.warn('MoMo direct confirm note:', err);
+        if (dom.momoModalImg && activeMomoUrl && activeMomoUrl !== '#') {
+          dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(activeMomoUrl)}`;
+        }
       })
       .finally(() => {
         if (dom.momoModalLoading) dom.momoModalLoading.style.display = 'none';

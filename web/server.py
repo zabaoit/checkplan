@@ -1082,20 +1082,33 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
     pk = offer.get("publishable_key")
     client_sec = offer.get("client_secret")
 
-    if not cs_id:
-        raise HTTPException(400, "Job chưa có checkout session ID")
-
     from momo_pay import get_momo_checkout_details
     from curl_cffi.requests import AsyncSession
     from user_agent_profile import CURL_IMPERSONATE_PRIMARY as _IMP
+    from payment_link import _execute_checkout_probe
 
     proxy = getattr(job, "_active_proxy", None)
     proxies = {"http": proxy, "https": proxy} if proxy else None
 
     async with AsyncSession(impersonate=_IMP, proxies=proxies) as session:
+        access_token = session_data.get("accessToken")
+        if access_token and (not client_sec or not pk or not cs_id):
+            try:
+                probe_res = await _execute_checkout_probe(session, access_token, promo_campaign="plus-1-month-free")
+                if probe_res.get("success"):
+                    cs_id = probe_res.get("session_id") or cs_id
+                    pk = probe_res.get("publishable_key") or pk
+                    client_sec = probe_res.get("client_secret") or client_sec
+                    offer.update(probe_res)
+            except Exception as e:
+                logger.warning("live probe error for momo: %s", e)
+
+        if not cs_id and not client_sec:
+            raise HTTPException(400, "Không tìm thấy phiên thanh toán hợp lệ")
+
         momo_res = await get_momo_checkout_details(
             session,
-            checkout_session_id=cs_id,
+            checkout_session_id=cs_id or "",
             publishable_key=pk,
             email=job.email,
             client_secret=client_sec,
