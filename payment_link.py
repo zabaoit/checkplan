@@ -183,54 +183,103 @@ async def generate_sentinel_token_async(session: AsyncSession, device_id: str) -
 
 
 def parse_payment_methods(stripe_info: dict) -> list[str]:
+    if not isinstance(stripe_info, dict):
+        return []
+
     elements_options = stripe_info.get("elements_options") or {}
     pm_types = (
         elements_options.get("payment_method_types")
         or stripe_info.get("payment_method_types")
         or []
     )
+    disabled_types = set()
+    disabled_list = (
+        elements_options.get("disabled_payment_method_types")
+        or stripe_info.get("disabled_payment_method_types")
+        or []
+    )
+    for d in disabled_list:
+        if d:
+            disabled_types.add(str(d).strip().lower().replace("-", "_").replace(" ", "_"))
+
     wallets = stripe_info.get("enabled_third_party_wallets") or []
     wallets_dict = elements_options.get("wallets") or stripe_info.get("wallets") or {}
     express_dict = elements_options.get("express_checkout") or stripe_info.get("express_checkout") or {}
 
     raw_methods = set()
+
     for item in pm_types:
         if item:
             m = str(item).strip().lower().replace("-", "_").replace(" ", "_")
-            raw_methods.add(m)
+            if m not in disabled_types:
+                raw_methods.add(m)
 
     for w in wallets:
         if w:
             w_id = w.get("id") if isinstance(w, dict) else w
             if w_id:
                 m = str(w_id).strip().lower().replace("-", "_").replace(" ", "_")
-                raw_methods.add(m)
+                if m not in disabled_types:
+                    raw_methods.add(m)
+
+    def _is_enabled(val: Any) -> bool:
+        if val is True:
+            return True
+        if isinstance(val, str) and val.lower() in ("auto", "always", "enabled", "on"):
+            return True
+        if isinstance(val, dict) and (val.get("enabled") is True or val.get("status") in ("active", "enabled")):
+            return True
+        return False
+
+    def _is_disabled(val: Any) -> bool:
+        if val is False:
+            return True
+        if isinstance(val, str) and val.lower() in ("never", "off", "disabled", "false"):
+            return True
+        if isinstance(val, dict) and (val.get("enabled") is False or val.get("status") in ("disabled", "inactive")):
+            return True
+        return False
 
     if isinstance(wallets_dict, dict):
         for k, v in wallets_dict.items():
             k_clean = str(k).strip().lower().replace("-", "_").replace(" ", "_")
-            if v is True or v in ("auto", "always", "enabled", "on") or (isinstance(v, dict) and (v.get("enabled") is True or v.get("status") in ("active", "enabled"))):
+            if _is_enabled(v) and k_clean not in disabled_types:
                 raw_methods.add(k_clean)
+            elif _is_disabled(v):
+                raw_methods.discard(k_clean)
 
     if isinstance(express_dict, dict):
         for k, v in express_dict.items():
             k_clean = str(k).strip().lower().replace("-", "_").replace(" ", "_")
-            if v is True or v in ("auto", "always", "enabled", "on") or (isinstance(v, dict) and (v.get("enabled") is True or v.get("status") in ("active", "enabled"))):
+            if _is_enabled(v) and k_clean not in disabled_types:
                 raw_methods.add(k_clean)
+            elif _is_disabled(v):
+                raw_methods.discard(k_clean)
 
-    # For active OpenAI Stripe custom checkout sessions (status open), express checkout wallets (GPay & Apple Pay) are enabled client-side by Stripe.js
-    status = stripe_info.get("status")
-    has_customer_secret = bool(stripe_info.get("customer_session_client_secret") or stripe_info.get("client_secret"))
-    is_valid_checkout = (status == "open" or stripe_info.get("checkout_session_id") or has_customer_secret)
+    for key in ("google_pay", "googlepay", "gpay", "paywithgoogle"):
+        top_val = stripe_info.get(key)
+        if _is_enabled(top_val):
+            raw_methods.add("google_pay")
+        elif _is_disabled(top_val):
+            raw_methods.discard("google_pay")
 
-    if is_valid_checkout:
-        raw_methods.add("google_pay")
-        raw_methods.add("apple_pay")
+    for key in ("apple_pay", "applepay"):
+        top_val = stripe_info.get(key)
+        if _is_enabled(top_val):
+            raw_methods.add("apple_pay")
+        elif _is_disabled(top_val):
+            raw_methods.discard("apple_pay")
 
-    allowed_methods = {"google_pay", "apple_pay", "momo"}
-    filtered_methods = [m for m in raw_methods if m in allowed_methods]
+    final_methods = set()
+    for m in raw_methods:
+        if m in ("google_pay", "googlepay", "gpay", "paywithgoogle"):
+            final_methods.add("google_pay")
+        elif m in ("apple_pay", "applepay"):
+            final_methods.add("apple_pay")
+        elif m == "momo":
+            final_methods.add("momo")
 
-    return sorted(filtered_methods)
+    return sorted(final_methods)
 
 
 def parse_trial_and_amount(stripe_info: dict) -> tuple[float | None, str, bool | None]:
