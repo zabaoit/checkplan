@@ -240,44 +240,37 @@ def parse_payment_methods(stripe_info: dict) -> list[str]:
             return True
         return False
 
-    # 1. Apple Pay is universally supported on all valid OpenAI Stripe checkout sessions
     status = stripe_info.get("status")
     has_customer_secret = bool(stripe_info.get("customer_session_client_secret") or stripe_info.get("client_secret"))
-    is_valid_checkout = (status == "open" or stripe_info.get("checkout_session_id") or has_customer_secret)
+    session_id_str = str(
+        stripe_info.get("checkout_session_id")
+        or stripe_info.get("session_id")
+        or stripe_info.get("id")
+        or stripe_info.get("url")
+        or ""
+    )
+    is_valid_checkout = bool(status == "open" or session_id_str or has_customer_secret)
 
-    if is_valid_checkout and "apple_pay" not in disabled_types and "applepay" not in disabled_types:
-        raw_methods.add("apple_pay")
+    # - oaics_...: OpenAI Modern Custom Checkout -> Apple Pay & Google Pay
+    # - cs_live_... / cs_...: Stripe Legacy Direct Checkout -> Only Apple Pay (No Google Pay)
+    is_oaics = "oaics_" in session_id_str
+    is_cs_live = "cs_live_" in session_id_str or session_id_str.startswith("cs_")
 
-    # 2. Google Pay: Must have real gateway credentials or explicit activation from Stripe
-    has_gpay = False
-    gpay_obj = stripe_info.get("google_pay") or stripe_info.get("googlePay")
-    if isinstance(gpay_obj, dict):
-        if gpay_obj.get("status") in ("disabled", "inactive") or gpay_obj.get("enabled") is False:
-            has_gpay = False
-        elif gpay_obj.get("merchant_id") or gpay_obj.get("gateway_merchant_id") or gpay_obj.get("merchant_name") or gpay_obj.get("status") in ("active", "enabled") or gpay_obj.get("enabled") is True:
-            has_gpay = True
-
-    if stripe_info.get("google_pay_enabled") is True:
-        has_gpay = True
-
-    if not has_gpay:
-        for w in wallets:
-            w_id = (w.get("id") if isinstance(w, dict) else w) or ""
-            if str(w_id).lower() in ("google_pay", "googlepay", "gpay"):
-                has_gpay = True
-
-    if not has_gpay:
-        for pm in pm_types:
-            if pm and str(pm).lower() in ("google_pay", "googlepay", "gpay", "paywithgoogle"):
-                has_gpay = True
-
-    if has_gpay and "google_pay" not in disabled_types and "googlepay" not in disabled_types:
-        raw_methods.add("google_pay")
-    else:
+    if is_oaics:
+        if "apple_pay" not in disabled_types and "applepay" not in disabled_types:
+            raw_methods.add("apple_pay")
+        if "google_pay" not in disabled_types and "googlepay" not in disabled_types:
+            raw_methods.add("google_pay")
+    elif is_cs_live:
+        if "apple_pay" not in disabled_types and "applepay" not in disabled_types:
+            raw_methods.add("apple_pay")
         raw_methods.discard("google_pay")
         raw_methods.discard("googlepay")
         raw_methods.discard("gpay")
         raw_methods.discard("paywithgoogle")
+    else:
+        if is_valid_checkout and "apple_pay" not in disabled_types and "applepay" not in disabled_types:
+            raw_methods.add("apple_pay")
 
     final_methods = set()
     for m in raw_methods:
@@ -592,6 +585,12 @@ async def _execute_checkout_probe(
             stripe_info = checkout_data
     else:
         stripe_info = checkout_data
+
+    if isinstance(stripe_info, dict):
+        if not stripe_info.get("checkout_session_id"):
+            stripe_info["checkout_session_id"] = session_id
+        if not stripe_info.get("url") and checkout_data.get("url"):
+            stripe_info["url"] = checkout_data.get("url")
 
     payment_methods = parse_payment_methods(stripe_info)
     amount_due, currency, is_trial = parse_trial_and_amount(stripe_info)
