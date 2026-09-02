@@ -256,19 +256,41 @@ def parse_payment_methods(stripe_info: dict) -> list[str]:
             elif _is_disabled(v):
                 raw_methods.discard(k_clean)
 
+    # 1. Apple Pay is universally supported on all valid OpenAI Stripe checkout sessions
+    status = stripe_info.get("status")
+    has_customer_secret = bool(stripe_info.get("customer_session_client_secret") or stripe_info.get("client_secret"))
+    is_valid_checkout = (status == "open" or stripe_info.get("checkout_session_id") or has_customer_secret)
+
+    if is_valid_checkout and "apple_pay" not in disabled_types and "applepay" not in disabled_types:
+        raw_methods.add("apple_pay")
+
+    # 2. Google Pay check across all possible structures in stripe_info
+    has_gpay = False
     for key in ("google_pay", "googlepay", "gpay", "paywithgoogle"):
         top_val = stripe_info.get(key)
         if _is_enabled(top_val):
-            raw_methods.add("google_pay")
+            has_gpay = True
         elif _is_disabled(top_val):
+            has_gpay = False
             raw_methods.discard("google_pay")
 
-    for key in ("apple_pay", "applepay"):
-        top_val = stripe_info.get(key)
-        if _is_enabled(top_val):
-            raw_methods.add("apple_pay")
-        elif _is_disabled(top_val):
-            raw_methods.discard("apple_pay")
+    if not has_gpay and isinstance(elements_options, dict):
+        for key in ("google_pay", "googlepay", "gpay"):
+            val = elements_options.get(key)
+            if _is_enabled(val):
+                has_gpay = True
+
+    if not has_gpay:
+        for pm in pm_types:
+            if pm and str(pm).lower() in ("google_pay", "googlepay", "gpay"):
+                has_gpay = True
+        for w in wallets:
+            w_id = (w.get("id") if isinstance(w, dict) else w) or ""
+            if str(w_id).lower() in ("google_pay", "googlepay", "gpay"):
+                has_gpay = True
+
+    if has_gpay and "google_pay" not in disabled_types:
+        raw_methods.add("google_pay")
 
     final_methods = set()
     for m in raw_methods:
