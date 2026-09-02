@@ -1080,6 +1080,7 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
     offer = session_data.get("offer_details") or {}
     cs_id = offer.get("session_id") or offer.get("checkout_session_id")
     pk = offer.get("publishable_key")
+    client_sec = offer.get("client_secret")
 
     if not cs_id:
         raise HTTPException(400, "Job chưa có checkout session ID")
@@ -1097,6 +1098,7 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
             checkout_session_id=cs_id,
             publishable_key=pk,
             email=job.email,
+            client_secret=client_sec,
         )
 
     offer["momo_url"] = momo_res.get("momo_url")
@@ -1113,6 +1115,7 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
         "momo_url": momo_res.get("momo_url"),
         "qr_data": momo_res.get("qr_data"),
         "status": momo_res.get("status"),
+        "is_momo_native_qr": momo_res.get("is_momo_native_qr", False),
     })
 
 
