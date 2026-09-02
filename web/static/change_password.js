@@ -41,9 +41,20 @@
     successPane: $('chpwd-success-pane'),
     errorPane: $('chpwd-error-pane'),
     btnCopySuccess: $('chpwd-btn-copy-success'),
+    btnCopyMomo: $('chpwd-btn-copy-momo'),
     btnExportCsv: $('chpwd-btn-export-csv'),
     btnCopyError: $('chpwd-btn-copy-error'),
     btnClearDone: $('chpwd-btn-clear-done'),
+    momoModal: $('momo-qr-modal'),
+    momoModalClose: $('momo-qr-modal-close'),
+    momoModalOk: $('momo-qr-modal-ok'),
+    momoModalImg: $('momo-qr-modal-img'),
+    momoModalEmail: $('momo-qr-modal-email'),
+    momoModalPlan: $('momo-qr-modal-plan'),
+    momoModalPaylink: $('momo-qr-modal-paylink'),
+    momoModalCopyLink: $('momo-qr-modal-copy-link'),
+    momoModalOpenBtn: $('momo-qr-modal-open-btn'),
+    momoModalLoading: $('momo-qr-modal-loading'),
   };
 
   if (!dom.comboInput) return;
@@ -118,6 +129,7 @@
             html += `<span class="payment-tag payment-tag-gpay">Google Pay</span>`;
           } else if (mUpper === 'MOMO') {
             html += `<span class="payment-tag payment-tag-momo">MoMo</span>`;
+            html += `<button class="btn-momo-qr" data-action="momo-qr" data-id="${escHtml(job.id)}" title="Quét mã QR MoMo">🌸 QR</button>`;
           }
         }
         return html;
@@ -155,6 +167,7 @@
           html += `<span class="payment-tag payment-tag-gpay">Google Pay</span>`;
         } else if (mUpper === 'MOMO') {
           html += `<span class="payment-tag payment-tag-momo">MoMo</span>`;
+          html += `<button class="btn-momo-qr" data-action="momo-qr" data-id="${escHtml(job.id)}" title="Quét mã QR MoMo">🌸 QR</button>`;
         }
       }
       return html;
@@ -516,6 +529,9 @@
         api(`/api/change-password/jobs/${id}`, { method: 'DELETE' }).catch(async (err) => {
           await Dialog.alert({ message: err.message });
         });
+      } else if (action === 'momo-qr') {
+        openMomoModal(id);
+        return;
       } else if (action === 'copy-json' || action === 'copy-token') {
         detailFor(id).then((detail) => {
           if (action === 'copy-json') {
@@ -536,6 +552,99 @@
       renderLog(state.activeJobId);
       highlightInputLine(state.activeJobId);
     }
+  });
+
+  let activeMomoUrl = '';
+
+  function openMomoModal(jobId) {
+    const job = state.jobs.get(jobId);
+    if (!job) return;
+
+    if (dom.momoModalEmail) dom.momoModalEmail.textContent = job.email || '-';
+    if (dom.momoModalPlan) dom.momoModalPlan.textContent = job.plan || 'Trial · 0 đ (MoMo)';
+
+    let initialUrl = job.momo_url || job.checkout_url;
+    if (!initialUrl && job.offer_details && job.offer_details.session_id) {
+      initialUrl = `https://chatgpt.com/checkout/openai_llc/${job.offer_details.session_id}`;
+    }
+    initialUrl = initialUrl || '#';
+    activeMomoUrl = initialUrl;
+
+    if (dom.momoModalPaylink) {
+      dom.momoModalPaylink.href = initialUrl;
+      dom.momoModalPaylink.textContent = initialUrl !== '#' ? initialUrl : '-';
+    }
+    if (dom.momoModalOpenBtn) dom.momoModalOpenBtn.href = initialUrl;
+
+    if (dom.momoModalImg) {
+      if (initialUrl !== '#') {
+        dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(initialUrl)}`;
+      } else {
+        dom.momoModalImg.removeAttribute('src');
+      }
+    }
+
+    if (dom.momoModal) dom.momoModal.style.display = 'flex';
+    if (dom.momoModalLoading) dom.momoModalLoading.style.display = 'block';
+
+    api(`/api/change-password/jobs/${jobId}/momo-qr`, { method: 'POST' })
+      .then((res) => {
+        if (res.success && (res.momo_url || res.checkout_url)) {
+          const finalUrl = res.momo_url || res.checkout_url;
+          activeMomoUrl = finalUrl;
+          if (dom.momoModalPaylink) {
+            dom.momoModalPaylink.href = finalUrl;
+            dom.momoModalPaylink.textContent = finalUrl;
+          }
+          if (dom.momoModalOpenBtn) dom.momoModalOpenBtn.href = finalUrl;
+          if (dom.momoModalImg) {
+            dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(finalUrl)}`;
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('MoMo direct confirm note:', err);
+      })
+      .finally(() => {
+        if (dom.momoModalLoading) dom.momoModalLoading.style.display = 'none';
+      });
+  }
+
+  dom.momoModalClose?.addEventListener('click', () => {
+    if (dom.momoModal) dom.momoModal.style.display = 'none';
+  });
+
+  dom.momoModalOk?.addEventListener('click', () => {
+    if (dom.momoModal) dom.momoModal.style.display = 'none';
+  });
+
+  dom.momoModalCopyLink?.addEventListener('click', async () => {
+    if (activeMomoUrl && activeMomoUrl !== '#') {
+      window.GptUi.copyText(activeMomoUrl);
+      await Dialog.alert({ message: 'Đã copy link thanh toán MoMo!' });
+    }
+  });
+
+  dom.btnCopyMomo?.addEventListener('click', async () => {
+    const momoLinks = [];
+    for (const id of state.order) {
+      const job = state.jobs.get(id);
+      if (!job) continue;
+      const planText = String(job.plan || '') + String(job.error || '');
+      const hasMomo = job.has_momo || planText.toUpperCase().includes('MOMO');
+      if (hasMomo) {
+        const url = job.momo_url || job.checkout_url || (job.offer_details && job.offer_details.checkout_url) || (job.offer_details && `https://chatgpt.com/checkout/openai_llc/${job.offer_details.session_id}`);
+        if (url) {
+          momoLinks.push(`${job.email}|${url}`);
+        }
+      }
+    }
+    if (momoLinks.length === 0) {
+      await Dialog.alert({ message: 'Không tìm thấy tài khoản nào có MoMo.' });
+      return;
+    }
+    window.GptUi.copyText(momoLinks.join('\n'));
+    await Dialog.alert({ message: `Đã copy ${momoLinks.length} link MoMo vào clipboard!` });
   });
 
   SseBus.on('change_password', (data) => {

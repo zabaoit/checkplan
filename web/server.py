@@ -1070,6 +1070,52 @@ async def delete_change_password_job(job_id: str) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/change-password/jobs/{job_id}/momo-qr")
+async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
+    cm = get_change_password_manager()
+    if job_id not in cm.jobs:
+        raise HTTPException(404, "job not found")
+    job = cm.jobs[job_id]
+    session_data = job.session_data or {}
+    offer = session_data.get("offer_details") or {}
+    cs_id = offer.get("session_id") or offer.get("checkout_session_id")
+    pk = offer.get("publishable_key")
+
+    if not cs_id:
+        raise HTTPException(400, "Job chưa có checkout session ID")
+
+    from momo_pay import get_momo_checkout_details
+    from curl_cffi.requests import AsyncSession
+    from user_agent_profile import CURL_IMPERSONATE_PRIMARY as _IMP
+
+    proxy = getattr(job, "_active_proxy", None)
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+
+    async with AsyncSession(impersonate=_IMP, proxies=proxies) as session:
+        momo_res = await get_momo_checkout_details(
+            session,
+            checkout_session_id=cs_id,
+            publishable_key=pk,
+            email=job.email,
+        )
+
+    offer["momo_url"] = momo_res.get("momo_url")
+    offer["qr_data"] = momo_res.get("qr_data")
+    session_data["offer_details"] = offer
+    job.session_data = session_data
+    cm._broadcast_job(job)
+
+    return JSONResponse({
+        "success": True,
+        "job_id": job_id,
+        "checkout_session_id": cs_id,
+        "checkout_url": momo_res.get("checkout_url"),
+        "momo_url": momo_res.get("momo_url"),
+        "qr_data": momo_res.get("qr_data"),
+        "status": momo_res.get("status"),
+    })
+
+
 @app.post("/api/change-password/jobs/stop-all")
 async def stop_all_change_password_jobs() -> JSONResponse:
     cm = get_change_password_manager()

@@ -977,6 +977,43 @@ body {
   box-shadow: 0 0 8px rgba(192, 38, 211, 0.4);
 }
 
+.btn-momo-action {
+  background: linear-gradient(135deg, #d82d8b 0%, #a21caf 100%) !important;
+  color: #ffffff !important;
+  border: none !important;
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(216, 45, 139, 0.4);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+.btn-momo-action:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 0 14px rgba(216, 45, 139, 0.6);
+}
+
+.btn-momo-qr {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 9999px;
+  background: #d82d8b;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  margin-left: 6px;
+  box-shadow: 0 0 8px rgba(216, 45, 139, 0.4);
+  transition: transform 0.15s ease;
+}
+
+.btn-momo-qr:hover {
+  transform: scale(1.05);
+  filter: brightness(1.1);
+}
+
 .payment-tag-link {
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.35) 0%, rgba(79, 70, 229, 0.2) 100%);
   color: #c7d2fe;

@@ -280,6 +280,7 @@
   <section class="card card-success">
     <header class="card-head">
       <h2>Success output</h2>
+      <button id="chpwd-btn-copy-momo" class="btn btn-ghost btn-small btn-momo-action">🌸 Copy MoMo Links</button>
       <button id="chpwd-btn-export-csv" class="btn btn-ghost btn-small">Export Excel/CSV</button>
       <button id="chpwd-btn-copy-success" class="btn btn-ghost btn-small">Copy All</button>
     </header>
@@ -927,6 +928,37 @@
       <button id="upi-qr-modal-copy-link" class="btn btn-primary" type="button" style="display:none;">Copy link payment</button>
       <button id="upi-qr-modal-open" class="btn btn-ghost" type="button">Mở tab mới</button>
       <button id="upi-qr-modal-ok" class="btn btn-primary" type="button">Đóng</button>
+    </footer>
+  </div>
+</div>
+
+<!-- MoMo QR view modal -->
+<div id="momo-qr-modal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="momo-qr-modal-title">
+  <div class="modal-content modal-content-md momo-qr-modal-content">
+    <header class="modal-head">
+      <h3 id="momo-qr-modal-title">🌸 MoMo QR Thanh Toán</h3>
+      <button id="momo-qr-modal-close" class="btn-icon" aria-label="Close" title="Đóng">×</button>
+    </header>
+    <div class="modal-body momo-qr-modal-body" style="text-align:center;">
+      <div id="momo-qr-modal-loading" style="display:none; padding:20px; color:var(--text-muted);">
+        <span class="spinner"></span> Đang tạo QR thanh toán MoMo...
+      </div>
+      <div id="momo-qr-modal-content-wrap">
+        <div class="momo-qr-modal-image-wrap" style="margin: 10px auto; display: inline-block; padding: 12px; background: #fff; border-radius: 12px;">
+          <img id="momo-qr-modal-img" alt="MoMo QR" style="width: 220px; height: 220px; display: block;" />
+        </div>
+        <div class="momo-qr-modal-meta" style="margin-top: 12px; text-align: left;">
+          <div class="upi-qr-modal-row"><span class="muted">Tài khoản:</span> <code id="momo-qr-modal-email">-</code></div>
+          <div class="upi-qr-modal-row"><span class="muted">Gói / Ưu đãi:</span> <span id="momo-qr-modal-plan" style="color:var(--accent-teal); font-weight:600;">-</span></div>
+          <div class="upi-qr-modal-row"><span class="muted">Link thanh toán:</span> <a id="momo-qr-modal-paylink" href="#" target="_blank" rel="noopener noreferrer" style="word-break:break-all; color:var(--accent-pink, #d82d8b); font-weight:500;">Mở link MoMo</a></div>
+        </div>
+        <p style="margin-top: 14px; font-size: 13px; color: var(--text-muted);">Quét mã bằng app <b>MoMo</b> trên điện thoại hoặc bấm nút mở thanh toán trực tiếp.</p>
+      </div>
+    </div>
+    <footer class="modal-foot">
+      <button id="momo-qr-modal-copy-link" class="btn btn-ghost" type="button">Copy Link MoMo</button>
+      <a id="momo-qr-modal-open-btn" href="#" target="_blank" class="btn btn-momo-action" style="text-decoration:none; padding: 6px 16px;">🌸 Mở App / Web MoMo</a>
+      <button id="momo-qr-modal-ok" class="btn btn-primary" type="button">Đóng</button>
     </footer>
   </div>
 </div>

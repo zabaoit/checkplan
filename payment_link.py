@@ -628,9 +628,12 @@ async def _execute_checkout_probe(
 
     amount_str = format_currency_amount(amount_due, currency) if amount_due is not None else ""
 
+    checkout_url = f"https://chatgpt.com/checkout/openai_llc/{session_id}"
     return {
         "success": True,
         "session_id": session_id,
+        "publishable_key": publishable_key,
+        "checkout_url": checkout_url,
         "has_trial": is_trial,
         "has_discount": has_discount,
         "discount_percent": discount_percent,

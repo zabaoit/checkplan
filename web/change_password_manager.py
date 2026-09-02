@@ -92,6 +92,7 @@ class ChangePasswordJob:
         return "change_password"
 
     def to_dict(self) -> dict[str, Any]:
+        offer = (self.session_data or {}).get("offer_details")
         return {
             "id": self.id,
             "email": self.email,
@@ -102,6 +103,10 @@ class ChangePasswordJob:
             "has_new_password": bool(self.new_password),
             "has_initial_session": bool(self.initial_session),
             "plan": _extract_plan(self.session_data),
+            "offer_details": offer,
+            "has_momo": bool(offer and offer.get("has_momo")),
+            "checkout_url": (offer or {}).get("checkout_url"),
+            "momo_url": (offer or {}).get("momo_url") or (offer or {}).get("checkout_url"),
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
