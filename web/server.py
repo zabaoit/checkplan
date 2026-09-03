@@ -1139,7 +1139,8 @@ async def open_browser_for_job(job_id: str) -> JSONResponse:
         raise HTTPException(404, "job not found")
     job = cm.jobs[job_id]
     session_data = job.session_data or {}
-    cookies = session_data.get("__cookies") or session_data.get("cookies")
+    cookies_raw = session_data.get("__cookies") or session_data.get("cookies") or {}
+    session_token = session_data.get("sessionToken") or session_data.get("session_token")
     offer = session_data.get("offer_details") or {}
     cs_id = offer.get("session_id") or offer.get("checkout_session_id")
 
@@ -1147,48 +1148,56 @@ async def open_browser_for_job(job_id: str) -> JSONResponse:
 
     async def _launch_bg():
         try:
-            from camoufox.async_api import AsyncCamoufox
-            from user_agent_profile import CAMOUFOX_OS as _CAMOUFOX_OS
+            from playwright.async_api import async_playwright
             from config import Settings
 
             settings = Settings()
             profile_dir = settings.profiles_dir / f"momo_{job.id}"
+            profile_dir.mkdir(parents=True, exist_ok=True)
 
-            cf = AsyncCamoufox(
-                headless=False,
-                persistent_context=True,
-                user_data_dir=str(profile_dir),
-                os=list(_CAMOUFOX_OS),
-                locale="en-US",
-                geoip=False,
-            )
-            ctx = await cf.__aenter__()
+            pw = await async_playwright().start()
+            context = None
+            for ch in ("msedge", "chrome", None):
+                try:
+                    kwargs = {
+                        "user_data_dir": str(profile_dir),
+                        "headless": False,
+                        "args": ["--start-maximized"],
+                    }
+                    if ch:
+                        kwargs["channel"] = ch
+                    context = await pw.chromium.launch_persistent_context(**kwargs)
+                    break
+                except Exception as e:
+                    logger.warning("launch channel %s note: %s", ch, e)
 
-            if cookies:
-                cookie_list = []
-                for k, v in cookies.items() if isinstance(cookies, dict) else []:
-                    cookie_list.append({
-                        "name": k,
-                        "value": str(v),
-                        "domain": ".chatgpt.com",
-                        "path": "/",
-                    })
-                    cookie_list.append({
-                        "name": k,
-                        "value": str(v),
-                        "domain": "chatgpt.com",
-                        "path": "/",
-                    })
-                if cookie_list:
-                    try:
-                        await ctx.add_cookies(cookie_list)
-                    except Exception as ce:
-                        logger.warning("add_cookies error: %s", ce)
+            if not context:
+                logger.error("Could not launch any browser channel")
+                await pw.stop()
+                return
 
-            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            cookie_list = []
+            if isinstance(cookies_raw, dict):
+                for k, v in cookies_raw.items():
+                    cookie_list.append({"name": str(k), "value": str(v), "domain": ".chatgpt.com", "path": "/"})
+            elif isinstance(cookies_raw, list):
+                for c in cookies_raw:
+                    if isinstance(c, dict) and "name" in c and "value" in c:
+                        cookie_list.append({"name": str(c["name"]), "value": str(c["value"]), "domain": ".chatgpt.com", "path": "/"})
+
+            if session_token:
+                cookie_list.append({"name": "__Secure-next-auth.session-token", "value": str(session_token), "domain": ".chatgpt.com", "path": "/"})
+
+            if cookie_list:
+                try:
+                    await context.add_cookies(cookie_list)
+                except Exception as ce:
+                    logger.warning("add_cookies failed: %s", ce)
+
+            page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
         except Exception as exc:
-            logger.error("open_browser_for_job exception: %s", exc)
+            logger.error("open_browser_for_job error: %s", exc)
 
     asyncio.create_task(_launch_bg())
     return JSONResponse({"success": True, "target_url": target_url})
