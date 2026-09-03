@@ -313,24 +313,38 @@ async def _change_password_once(
             return await fetch_session(sess, email, log, proxy=proxy, label=label)
 
         if change_2fa_only:
-            log("[chpwd] change 2FA mode; initiating 2FA enrollment/rotation...")
+            log("[chpwd] change 2FA mode; initiating browser 2FA reset...")
             session_data = await fetch_session(sess, email, log, proxy=proxy, label="pre-2fa")
             access_token = str(session_data.get("accessToken") or "")
             cookies = export_session_cookies(sess)
-            from mfa_phase import change_or_enable_2fa_in_session, MfaError
+            mfa_res = None
             try:
-                mfa_res = await change_or_enable_2fa_in_session(
-                    sess,
-                    access_token=access_token,
+                from browser_2fa import rotate_2fa_via_browser
+                mfa_res = await rotate_2fa_via_browser(
+                    email=email,
+                    session_data=session_data,
                     cookies=cookies,
-                    old_secret=secret,
-                    password=current_password,
+                    session_token=session_data.get("sessionToken"),
+                    access_token=access_token,
+                    proxy=proxy,
                     log=log,
                 )
-            except MfaError as exc:
-                raise ChangePasswordError(f"Change 2FA failed: {exc}", committed=False) from exc
+            except Exception as b_exc:
+                log(f"[chpwd] browser 2FA note: {b_exc} — falling back to API rotation")
+                from mfa_phase import change_or_enable_2fa_in_session, MfaError
+                try:
+                    mfa_res = await change_or_enable_2fa_in_session(
+                        sess,
+                        access_token=access_token,
+                        cookies=cookies,
+                        old_secret=secret,
+                        password=current_password,
+                        log=log,
+                    )
+                except MfaError as exc:
+                    raise ChangePasswordError(f"Change 2FA failed: {exc}", committed=False) from exc
 
-            new_secret = mfa_res.get("secret")
+            new_secret = (mfa_res or {}).get("secret")
             refreshed = await fetch_session(sess, email, log, proxy=proxy, label="post-2fa", committed=True)
             refreshed["new_secret"] = new_secret
             refreshed["secret"] = new_secret
