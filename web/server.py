@@ -1142,84 +1142,33 @@ async def open_browser_for_job(job_id: str) -> JSONResponse:
         raise HTTPException(404, "job not found")
     job = cm.jobs[job_id]
     session_data = job.session_data or {}
-    cookies_raw = session_data.get("__cookies") or session_data.get("cookies") or {}
     session_token = session_data.get("sessionToken") or session_data.get("session_token")
     offer = session_data.get("offer_details") or {}
     cs_id = offer.get("session_id") or offer.get("checkout_session_id")
 
     target_url = f"https://chatgpt.com/checkout/openai_llc/{cs_id}" if cs_id else "https://chatgpt.com/#pricing"
 
-    async def _launch_bg():
-        try:
-            from playwright.async_api import async_playwright
-            from config import Settings
+    console_script = (
+        f'document.cookie = "__Secure-next-auth.session-token={session_token}; path=/; domain=.chatgpt.com; max-age=2592000; secure"; '
+        f'location.href = "{target_url}";'
+    ) if session_token else ""
 
-            settings = Settings()
-            profile_dir = settings.profiles_dir / f"momo_{job.id}"
-            profile_dir.mkdir(parents=True, exist_ok=True)
+    # Spawn directly via Windows desktop shell
+    import subprocess
+    try:
+        subprocess.Popen(f'cmd.exe /c start msedge.exe "{target_url}"', shell=True)
+    except Exception as exc:
+        logger.warning("cmd start msedge note: %s", exc)
 
-            # Đóng session cũ nếu có
-            if job_id in _interactive_browsers:
-                old_pw, old_ctx = _interactive_browsers.pop(job_id)
-                try:
-                    await old_ctx.close()
-                    await old_pw.stop()
-                except Exception:
-                    pass
-
-            pw = await async_playwright().start()
-            context = None
-            for ch in ("msedge", "chrome", None):
-                try:
-                    kwargs = {
-                        "user_data_dir": str(profile_dir),
-                        "headless": False,
-                        "args": ["--start-maximized"],
-                    }
-                    if ch:
-                        kwargs["channel"] = ch
-                    context = await pw.chromium.launch_persistent_context(**kwargs)
-                    break
-                except Exception as e:
-                    logger.warning("launch channel %s note: %s", ch, e)
-
-            if not context:
-                logger.error("Could not launch any browser channel")
-                await pw.stop()
-                return
-
-            _interactive_browsers[job_id] = (pw, context)
-
-            def _on_close():
-                _interactive_browsers.pop(job_id, None)
-
-            context.on("close", lambda ctx: _on_close())
-
-            cookie_list = []
-            if isinstance(cookies_raw, dict):
-                for k, v in cookies_raw.items():
-                    cookie_list.append({"name": str(k), "value": str(v), "domain": ".chatgpt.com", "path": "/"})
-            elif isinstance(cookies_raw, list):
-                for c in cookies_raw:
-                    if isinstance(c, dict) and "name" in c and "value" in c:
-                        cookie_list.append({"name": str(c["name"]), "value": str(c["value"]), "domain": ".chatgpt.com", "path": "/"})
-
-            if session_token:
-                cookie_list.append({"name": "__Secure-next-auth.session-token", "value": str(session_token), "domain": ".chatgpt.com", "path": "/"})
-
-            if cookie_list:
-                try:
-                    await context.add_cookies(cookie_list)
-                except Exception as ce:
-                    logger.warning("add_cookies failed: %s", ce)
-
-            page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-        except Exception as exc:
-            logger.error("open_browser_for_job error: %s", exc)
-
-    asyncio.create_task(_launch_bg())
-    return JSONResponse({"success": True, "target_url": target_url})
+    return JSONResponse({
+        "success": True,
+        "target_url": target_url,
+        "session_token": session_token,
+        "console_script": console_script,
+        "email": job.email,
+        "new_password": job.new_password,
+        "secret": job.secret,
+    })
 
 
 @app.post("/api/change-password/jobs/stop-all")

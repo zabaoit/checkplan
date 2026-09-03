@@ -627,11 +627,18 @@
     const btn = dom.momoModalOpenBrowserBtn;
     const oldText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '⏳ Đang mở trình duyệt...';
+    btn.textContent = '⏳ Đang mở...';
     try {
       const res = await api(`/api/change-password/jobs/${activeMomoJobId}/open-browser`, { method: 'POST' });
       if (res.success) {
-        await Dialog.alert({ message: '🚀 Đã mở trình duyệt tự động nạp session! Trình duyệt sẽ tự chuyển thẳng vào trang Checkout MoMo.' });
+        if (res.console_script) {
+          window.GptUi.copyText(res.console_script);
+          await Dialog.alert({
+            message: '🚀 Đã mở trình duyệt Edge!\n\n💡 Mẹo 1-Click Login: Tool đã tự copy đoạn code nạp session vào Clipboard của bạn. Nếu trình duyệt chưa login, bạn chỉ cần mở tab chatgpt.com, bấm F12 -> Console -> Ctrl+V (Enter) là sẽ tự động login và chuyển thẳng vào trang Checkout MoMo!',
+          });
+        } else {
+          await Dialog.alert({ message: '🚀 Đã mở trình duyệt Edge!' });
+        }
       }
     } catch (err) {
       await Dialog.alert({ message: 'Không thể mở trình duyệt: ' + err.message });
