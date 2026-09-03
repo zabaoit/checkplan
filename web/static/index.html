@@ -284,7 +284,22 @@
       <button id="chpwd-btn-export-csv" class="btn btn-ghost btn-small">Export Excel/CSV</button>
       <button id="chpwd-btn-copy-success" class="btn btn-ghost btn-small">Copy All</button>
     </header>
-    <pre id="chpwd-success-pane" class="output-pane">Format: email|new_password|secret_2fa</pre>
+    <div class="success-split-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; flex: 1; padding: 8px; min-height: 140px;">
+      <div class="success-sub-col" style="display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+        <div class="success-sub-head" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(59, 130, 246, 0.08); border-bottom: 1px solid var(--border);">
+          <span style="font-weight: 600; font-size: 12px; color: #60a5fa;">🔵 Google Pay + 🍏 Apple Pay <span id="chpwd-badge-gpay" class="badge-count" style="background: rgba(59, 130, 246, 0.2); padding: 1px 6px; border-radius: 10px; margin-left: 4px; font-size: 11px;">0</span></span>
+          <button id="chpwd-btn-copy-gpay" class="btn btn-ghost btn-small" type="button" style="padding: 2px 8px; font-size: 11px;">Copy GPay & APay</button>
+        </div>
+        <pre id="chpwd-success-gpay-pane" class="output-pane" style="flex: 1; margin: 0; padding: 8px 10px; font-size: 11.5px; border: none; white-space: pre-wrap; word-break: break-all;">No accounts yet.</pre>
+      </div>
+      <div class="success-sub-col" style="display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+        <div class="success-sub-head" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(16, 185, 129, 0.08); border-bottom: 1px solid var(--border);">
+          <span style="font-weight: 600; font-size: 12px; color: #34d399;">🍏 Apple Pay Only <span id="chpwd-badge-apple" class="badge-count" style="background: rgba(16, 185, 129, 0.2); padding: 1px 6px; border-radius: 10px; margin-left: 4px; font-size: 11px;">0</span></span>
+          <button id="chpwd-btn-copy-apple" class="btn btn-ghost btn-small" type="button" style="padding: 2px 8px; font-size: 11px;">Copy Apple Only</button>
+        </div>
+        <pre id="chpwd-success-apple-pane" class="output-pane" style="flex: 1; margin: 0; padding: 8px 10px; font-size: 11.5px; border: none; white-space: pre-wrap; word-break: break-all;">No accounts yet.</pre>
+      </div>
+    </div>
   </section>
 
   <section class="card card-error">

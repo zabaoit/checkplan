@@ -39,8 +39,13 @@
     logPane: $('chpwd-log-pane'),
     logTarget: $('chpwd-log-target'),
     successPane: $('chpwd-success-pane'),
-    errorPane: $('chpwd-error-pane'),
+    successGpayPane: $('chpwd-success-gpay-pane'),
+    successApplePane: $('chpwd-success-apple-pane'),
+    badgeGpay: $('chpwd-badge-gpay'),
+    badgeApple: $('chpwd-badge-apple'),
     btnCopySuccess: $('chpwd-btn-copy-success'),
+    btnCopyGpay: $('chpwd-btn-copy-gpay'),
+    btnCopyApple: $('chpwd-btn-copy-apple'),
     btnCopyMomo: $('chpwd-btn-copy-momo'),
     btnExportCsv: $('chpwd-btn-export-csv'),
     btnCopyError: $('chpwd-btn-copy-error'),
@@ -242,9 +247,12 @@
   }
 
   function renderOutputs() {
-    const successLines = [];
+    const gpayLines = [];
+    const appleLines = [];
+    const otherSuccessLines = [];
     const errorLines = [];
     const pendingLoads = [];
+
     for (const id of state.order) {
       const job = state.jobs.get(id);
       if (!job) continue;
@@ -254,22 +262,55 @@
           pendingLoads.push(detailFor(id).then(() => renderOutputs()).catch(() => {}));
           continue;
         }
+        let line = '';
         if (job.mode === 'change_2fa' || (!detail.new_password && detail.secret)) {
           const pw = detail.current_password || job.current_password || '';
-          successLines.push(`${job.email}|${pw}|${detail.secret || ''}`);
+          line = `${job.email}|${pw}|${detail.secret || ''}`;
         } else if (detail.new_password) {
-          successLines.push(`${job.email}|${detail.new_password}|${detail.secret || ''}`);
+          line = `${job.email}|${detail.new_password}|${detail.secret || ''}`;
         } else {
-          successLines.push(`${job.email} -> ${job.plan || 'PLUS'}`);
+          line = `${job.email} -> ${job.plan || 'PLUS'}`;
+        }
+
+        const planUpper = String(job.plan || '').toUpperCase();
+        const hasGpay = planUpper.includes('GPAY') || planUpper.includes('GOOGLE PAY') || planUpper.includes('GOOGLEPAY');
+        const hasApple = planUpper.includes('APPLE PAY') || planUpper.includes('APPLEPAY');
+
+        if (hasGpay) {
+          gpayLines.push(line);
+        } else if (hasApple) {
+          appleLines.push(line);
+        } else {
+          otherSuccessLines.push(line);
         }
       } else if (job.status === 'error') {
         errorLines.push(`${job.email} -> ${job.error || 'ERROR'}`);
       }
     }
-    dom.successPane.textContent = successLines.length
-      ? successLines.join('\n')
-      : 'SUCCESS OUTPUT:\nemail -> CÓ OFFER (GPay, PayPal...)';
-    dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'ERROR OUTPUT:\nemail -> KHÔNG CÓ OFFER';
+
+    if (dom.successGpayPane) {
+      dom.successGpayPane.textContent = gpayLines.length
+        ? gpayLines.join('\n')
+        : 'Chưa có tài khoản có Google Pay + Apple Pay.';
+    }
+    if (dom.successApplePane) {
+      dom.successApplePane.textContent = appleLines.length
+        ? appleLines.join('\n')
+        : 'Chưa có tài khoản chỉ có Apple Pay.';
+    }
+    if (dom.badgeGpay) dom.badgeGpay.textContent = gpayLines.length;
+    if (dom.badgeApple) dom.badgeApple.textContent = appleLines.length;
+
+    const allSuccess = [...gpayLines, ...appleLines, ...otherSuccessLines];
+    if (dom.successPane) {
+      dom.successPane.textContent = allSuccess.length
+        ? allSuccess.join('\n')
+        : 'SUCCESS OUTPUT:\nemail -> CÓ OFFER (GPay, PayPal...)';
+    }
+
+    if (dom.errorPane) {
+      dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'ERROR OUTPUT:\nemail -> KHÔNG CÓ OFFER';
+    }
     void pendingLoads;
   }
 
@@ -467,7 +508,32 @@
   });
 
   dom.btnCopySuccess.addEventListener('click', () => {
-    window.GptUi.copyText(dom.successPane.textContent);
+    const all = [];
+    if (dom.successGpayPane && dom.successGpayPane.textContent && !dom.successGpayPane.textContent.startsWith('Chưa có')) {
+      all.push(dom.successGpayPane.textContent);
+    }
+    if (dom.successApplePane && dom.successApplePane.textContent && !dom.successApplePane.textContent.startsWith('Chưa có')) {
+      all.push(dom.successApplePane.textContent);
+    }
+    const text = all.join('\n');
+    if (text) {
+      window.GptUi.copyText(text);
+      Dialog.alert({ message: 'Đã copy toàn bộ tài khoản thành công!' });
+    }
+  });
+
+  dom.btnCopyGpay?.addEventListener('click', () => {
+    if (dom.successGpayPane && dom.successGpayPane.textContent && !dom.successGpayPane.textContent.startsWith('Chưa có')) {
+      window.GptUi.copyText(dom.successGpayPane.textContent);
+      Dialog.alert({ message: 'Đã copy danh sách tài khoản Google Pay + Apple Pay!' });
+    }
+  });
+
+  dom.btnCopyApple?.addEventListener('click', () => {
+    if (dom.successApplePane && dom.successApplePane.textContent && !dom.successApplePane.textContent.startsWith('Chưa có')) {
+      window.GptUi.copyText(dom.successApplePane.textContent);
+      Dialog.alert({ message: 'Đã copy danh sách tài khoản Apple Pay Only!' });
+    }
   });
 
   dom.btnExportCsv.addEventListener('click', async () => {
