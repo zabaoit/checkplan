@@ -1132,6 +1132,9 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
     })
 
 
+_interactive_browsers: dict[str, Any] = {}
+
+
 @app.post("/api/change-password/jobs/{job_id}/open-browser")
 async def open_browser_for_job(job_id: str) -> JSONResponse:
     cm = get_change_password_manager()
@@ -1155,6 +1158,15 @@ async def open_browser_for_job(job_id: str) -> JSONResponse:
             profile_dir = settings.profiles_dir / f"momo_{job.id}"
             profile_dir.mkdir(parents=True, exist_ok=True)
 
+            # Đóng session cũ nếu có
+            if job_id in _interactive_browsers:
+                old_pw, old_ctx = _interactive_browsers.pop(job_id)
+                try:
+                    await old_ctx.close()
+                    await old_pw.stop()
+                except Exception:
+                    pass
+
             pw = await async_playwright().start()
             context = None
             for ch in ("msedge", "chrome", None):
@@ -1175,6 +1187,13 @@ async def open_browser_for_job(job_id: str) -> JSONResponse:
                 logger.error("Could not launch any browser channel")
                 await pw.stop()
                 return
+
+            _interactive_browsers[job_id] = (pw, context)
+
+            def _on_close():
+                _interactive_browsers.pop(job_id, None)
+
+            context.on("close", lambda ctx: _on_close())
 
             cookie_list = []
             if isinstance(cookies_raw, dict):
