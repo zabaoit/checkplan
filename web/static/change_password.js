@@ -51,7 +51,8 @@
     momoModalImg: $('momo-qr-modal-img'),
     momoModalEmail: $('momo-qr-modal-email'),
     momoModalPassword: $('momo-qr-modal-password'),
-    momoModalSecret: $('momo-qr-modal-secret'),
+    momoModalOtp: $('momo-qr-modal-otp'),
+    momoCopyOtpBtn: $('momo-copy-otp-btn'),
     momoModalPlan: $('momo-qr-modal-plan'),
     momoModalPaylink: $('momo-qr-modal-paylink'),
     momoModalCopyLink: $('momo-qr-modal-copy-link'),
@@ -592,6 +593,12 @@
         const finalUrl = res.momo_url || res.checkout_url || activeMomoUrl;
         const qrData = res.qr_data || finalUrl;
         activeMomoUrl = finalUrl;
+        if (res.password && dom.momoModalPassword) {
+          dom.momoModalPassword.textContent = res.password;
+        }
+        if (dom.momoModalOtp) {
+          dom.momoModalOtp.textContent = res.otp_code || '-';
+        }
         if (dom.momoModalPaylink) {
           dom.momoModalPaylink.href = finalUrl;
           dom.momoModalPaylink.textContent = finalUrl;
@@ -617,6 +624,14 @@
 
   dom.momoModalOk?.addEventListener('click', () => {
     if (dom.momoModal) dom.momoModal.style.display = 'none';
+  });
+
+  dom.momoCopyOtpBtn?.addEventListener('click', async () => {
+    const otp = dom.momoModalOtp ? dom.momoModalOtp.textContent.trim() : '';
+    if (otp && otp !== '-') {
+      window.GptUi.copyText(otp);
+      await Dialog.alert({ message: `Đã copy mã OTP 2FA: ${otp}` });
+    }
   });
 
   dom.momoModalCopyLink?.addEventListener('click', async () => {

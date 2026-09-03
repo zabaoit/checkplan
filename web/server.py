@@ -1120,6 +1120,15 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
     job.session_data = session_data
     cm._broadcast_job(job)
 
+    secret = (session_data.get("new_secret") or session_data.get("secret") or job.secret)
+    otp_code = ""
+    if secret:
+        try:
+            import pyotp
+            otp_code = pyotp.TOTP(secret).now()
+        except Exception:
+            pass
+
     return JSONResponse({
         "success": True,
         "job_id": job_id,
@@ -1129,10 +1138,11 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
         "qr_data": momo_res.get("qr_data"),
         "status": momo_res.get("status"),
         "is_momo_native_qr": momo_res.get("is_momo_native_qr", False),
+        "email": job.email,
+        "password": job.new_password or job.current_password,
+        "secret": secret,
+        "otp_code": otp_code,
     })
-
-
-_interactive_browsers: dict[str, Any] = {}
 
 
 @app.post("/api/change-password/jobs/{job_id}/open-browser")
@@ -1148,26 +1158,23 @@ async def open_browser_for_job(job_id: str) -> JSONResponse:
 
     target_url = f"https://chatgpt.com/checkout/openai_llc/{cs_id}" if cs_id else "https://chatgpt.com/#pricing"
 
-    console_script = (
-        f'document.cookie = "__Secure-next-auth.session-token={session_token}; path=/; domain=.chatgpt.com; max-age=2592000; secure"; '
-        f'location.href = "{target_url}";'
-    ) if session_token else ""
-
-    # Spawn directly via Windows desktop shell
-    import subprocess
-    try:
-        subprocess.Popen(f'cmd.exe /c start msedge.exe "{target_url}"', shell=True)
-    except Exception as exc:
-        logger.warning("cmd start msedge note: %s", exc)
+    secret = (session_data.get("new_secret") or session_data.get("secret") or job.secret)
+    otp_code = ""
+    if secret:
+        try:
+            import pyotp
+            otp_code = pyotp.TOTP(secret).now()
+        except Exception:
+            pass
 
     return JSONResponse({
         "success": True,
         "target_url": target_url,
         "session_token": session_token,
-        "console_script": console_script,
         "email": job.email,
-        "new_password": job.new_password,
-        "secret": job.secret,
+        "password": job.new_password or job.current_password,
+        "secret": secret,
+        "otp_code": otp_code,
     })
 
 
