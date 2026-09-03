@@ -1120,6 +1120,23 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
     job.session_data = session_data
     cm._broadcast_job(job)
 
+    offer = session_data.get("offer_details") or {}
+    cs_id = offer.get("session_id") or offer.get("checkout_session_id")
+
+    promo_id = offer.get("promo_campaign_id")
+    if not promo_id:
+        plan_str = str(session_data.get("plan") or job.plan or "")
+        if "3T" in plan_str or "3-months" in plan_str:
+            promo_id = "plus-3-months-50-pct-off"
+        elif "2T" in plan_str or "2-months" in plan_str:
+            promo_id = "plus-2-months-50-pct-off"
+        elif "1T" in plan_str or "1-month-50" in plan_str:
+            promo_id = "plus-1-month-50-pct-off"
+        elif "Trial" in plan_str or "0 đ" in plan_str or "free" in plan_str:
+            promo_id = "plus-1-month-free"
+
+    promo_url = f"https://chatgpt.com/?promo_campaign={promo_id}#pricing" if promo_id else f"https://chatgpt.com/checkout/openai_llc/{cs_id}" if cs_id else "https://chatgpt.com/#pricing"
+
     secret = (session_data.get("new_secret") or session_data.get("secret") or job.secret)
     otp_code = ""
     if secret:
@@ -1133,8 +1150,8 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
         "success": True,
         "job_id": job_id,
         "checkout_session_id": cs_id,
-        "checkout_url": momo_res.get("checkout_url"),
-        "momo_url": momo_res.get("momo_url"),
+        "checkout_url": promo_url,
+        "momo_url": promo_url,
         "qr_data": momo_res.get("qr_data"),
         "status": momo_res.get("status"),
         "is_momo_native_qr": momo_res.get("is_momo_native_qr", False),
@@ -1142,6 +1159,7 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
         "password": job.new_password or job.current_password,
         "secret": secret,
         "otp_code": otp_code,
+        "promo_url": promo_url,
     })
 
 
@@ -1156,7 +1174,19 @@ async def open_browser_for_job(job_id: str) -> JSONResponse:
     offer = session_data.get("offer_details") or {}
     cs_id = offer.get("session_id") or offer.get("checkout_session_id")
 
-    target_url = f"https://chatgpt.com/checkout/openai_llc/{cs_id}" if cs_id else "https://chatgpt.com/#pricing"
+    promo_id = offer.get("promo_campaign_id")
+    if not promo_id:
+        plan_str = str(session_data.get("plan") or job.plan or "")
+        if "3T" in plan_str or "3-months" in plan_str:
+            promo_id = "plus-3-months-50-pct-off"
+        elif "2T" in plan_str or "2-months" in plan_str:
+            promo_id = "plus-2-months-50-pct-off"
+        elif "1T" in plan_str or "1-month-50" in plan_str:
+            promo_id = "plus-1-month-50-pct-off"
+        elif "Trial" in plan_str or "0 đ" in plan_str or "free" in plan_str:
+            promo_id = "plus-1-month-free"
+
+    target_url = f"https://chatgpt.com/?promo_campaign={promo_id}#pricing" if promo_id else f"https://chatgpt.com/checkout/openai_llc/{cs_id}" if cs_id else "https://chatgpt.com/#pricing"
 
     secret = (session_data.get("new_secret") or session_data.get("secret") or job.secret)
     otp_code = ""

@@ -662,6 +662,8 @@ async def check_gpt_offer_async(
         if trial_res.get("success"):
             if trial_res.get("has_trial"):
                 trial_res["promo_label"] = "Trial · 0 đ"
+                trial_res["promo_campaign_id"] = "plus-1-month-free"
+                trial_res["promo_url"] = "https://chatgpt.com/?promo_campaign=plus-1-month-free#pricing"
                 return trial_res
             if trial_res.get("error") and "401" in str(trial_res.get("error")):
                 return trial_res
@@ -685,6 +687,8 @@ async def check_gpt_offer_async(
                     return res
                 continue
 
+            res["promo_campaign_id"] = p_id
+            res["promo_url"] = f"https://chatgpt.com/?promo_campaign={p_id}#pricing" if p_id else "https://chatgpt.com/#pricing"
             last_res = res
             if res.get("has_trial"):
                 res["promo_label"] = "Trial · 0 đ"
