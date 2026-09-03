@@ -50,11 +50,12 @@
     momoModalOk: $('momo-qr-modal-ok'),
     momoModalImg: $('momo-qr-modal-img'),
     momoModalEmail: $('momo-qr-modal-email'),
+    momoModalPassword: $('momo-qr-modal-password'),
+    momoModalSecret: $('momo-qr-modal-secret'),
     momoModalPlan: $('momo-qr-modal-plan'),
     momoModalPaylink: $('momo-qr-modal-paylink'),
     momoModalCopyLink: $('momo-qr-modal-copy-link'),
     momoModalOpenBrowserBtn: $('momo-qr-modal-open-browser-btn'),
-    momoModalOpenBtn: $('momo-qr-modal-open-btn'),
     momoModalLoading: $('momo-qr-modal-loading'),
   };
 
@@ -564,6 +565,11 @@
     activeMomoJobId = jobId;
 
     if (dom.momoModalEmail) dom.momoModalEmail.textContent = job.email || '-';
+    if (dom.momoModalPassword) dom.momoModalPassword.textContent = job.new_password || job.current_password || '-';
+    if (dom.momoModalSecret) {
+      const sec = (job.session_data && (job.session_data.new_secret || job.session_data.secret)) || job.secret || '-';
+      dom.momoModalSecret.textContent = sec;
+    }
     if (dom.momoModalPlan) dom.momoModalPlan.textContent = job.plan || 'Trial · 0 đ (MoMo)';
 
     let initialUrl = job.momo_url || job.checkout_url || '#';
@@ -573,7 +579,6 @@
       dom.momoModalPaylink.href = initialUrl;
       dom.momoModalPaylink.textContent = initialUrl !== '#' ? initialUrl : '-';
     }
-    if (dom.momoModalOpenBtn) dom.momoModalOpenBtn.href = initialUrl;
 
     if (dom.momoModalImg) {
       dom.momoModalImg.removeAttribute('src');
@@ -591,7 +596,6 @@
           dom.momoModalPaylink.href = finalUrl;
           dom.momoModalPaylink.textContent = finalUrl;
         }
-        if (dom.momoModalOpenBtn) dom.momoModalOpenBtn.href = finalUrl;
         if (dom.momoModalImg && qrData && qrData !== '#') {
           dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(qrData)}`;
         }
@@ -630,18 +634,19 @@
     btn.textContent = '⏳ Đang mở...';
     try {
       const res = await api(`/api/change-password/jobs/${activeMomoJobId}/open-browser`, { method: 'POST' });
-      if (res.success) {
-        if (res.console_script) {
-          window.GptUi.copyText(res.console_script);
-          await Dialog.alert({
-            message: '🚀 Đã mở trình duyệt Edge!\n\n💡 Mẹo 1-Click Login: Tool đã tự copy đoạn code nạp session vào Clipboard của bạn. Nếu trình duyệt chưa login, bạn chỉ cần mở tab chatgpt.com, bấm F12 -> Console -> Ctrl+V (Enter) là sẽ tự động login và chuyển thẳng vào trang Checkout MoMo!',
-          });
-        } else {
-          await Dialog.alert({ message: '🚀 Đã mở trình duyệt Edge!' });
-        }
+      const targetUrl = (res && res.target_url) || activeMomoUrl || 'https://chatgpt.com/#pricing';
+      
+      // Mở ngay tab mới trên trình duyệt của người dùng
+      window.open(targetUrl, '_blank');
+
+      if (res && res.console_script) {
+        window.GptUi.copyText(res.console_script);
+        await Dialog.alert({
+          message: '🚀 Đã mở tab ChatGPT!\n\n💡 Mẹo 1-Click Login: Tool đã copy sẵn code nạp session vào Clipboard. Nếu tab vừa mở báo Application Error hoặc chưa login, bạn chỉ cần ở tab đó bấm F12 -> Console -> Ctrl+V (Enter) là sẽ tự động đăng nhập và vào thẳng trang Checkout MoMo!',
+        });
       }
     } catch (err) {
-      await Dialog.alert({ message: 'Không thể mở trình duyệt: ' + err.message });
+      await Dialog.alert({ message: 'Lỗi: ' + err.message });
     } finally {
       btn.disabled = false;
       btn.textContent = oldText;
