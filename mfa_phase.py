@@ -442,26 +442,44 @@ async def _activate_enrollment(
     )
 
 
-async def _check_mfa_info(session: AsyncSession, *, access_token: str, log) -> dict[str, Any]:
-    """GET /mfa_info — verify-only, fire-and-forget.
-
-    Activate 200 = đã enable server-side. mfa_info chỉ để log info bổ sung.
-    1 attempt × 10s timeout. Mọi exception/non-200 → ``{}``, không raise.
-    """
+async def _check_mfa_info(
+    session: AsyncSession,
+    *,
+    access_token: str,
+    cookies: list[dict[str, Any]] | None = None,
+    log=print,
+) -> dict[str, Any]:
+    from user_agent_profile import (
+        WINDOWS_USER_AGENT as _UA,
+        SEC_CH_UA as _SEC_CH_UA,
+        SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
+        SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
+    )
+    if cookies:
+        _inject_session_cookies(session, cookies, log=log)
     url = f"{_BASE}/accounts/mfa_info"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "*/*",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "User-Agent": _UA,
+        "sec-ch-ua": _SEC_CH_UA,
+        "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+    }
     try:
         r = await session.get(url, headers=headers, timeout=_MFA_INFO_TIMEOUT)
-        if r.status_code != 200:
-            log(f"[mfa] mfa_info HTTP {r.status_code} — ignored (activate đã OK)")
-            return {}
-        return r.json()
+        log(f"[mfa] _check_mfa_info HTTP {r.status_code}: {r.text[:150]}")
+        if r.status_code == 200:
+            return r.json()
     except Exception as exc:
-        log(f"[mfa] mfa_info skipped ({type(exc).__name__}: {exc}) — activate đã OK")
-        return {}
+        log(f"[mfa] mfa_info error: {exc}")
+    return {}
 
 
-async def _unenroll_factor(session: AsyncSession, *, access_token: str, factor_id: str, log) -> bool:
+async def _disable_all_mfa(session: AsyncSession, *, access_token: str, log=print) -> bool:
+    """Gửi các lệnh tắt triệt để toàn bộ 2FA cũ trên tài khoản."""
     from user_agent_profile import (
         WINDOWS_USER_AGENT as _UA,
         SEC_CH_UA as _SEC_CH_UA,
@@ -480,11 +498,52 @@ async def _unenroll_factor(session: AsyncSession, *, access_token: str, factor_i
         "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
     }
     endpoints = [
+        ("DELETE", f"{_BASE}/accounts/mfa", None),
+        ("POST", f"{_BASE}/accounts/mfa/disable", {}),
+        ("POST", f"{_BASE}/accounts/mfa/user/disable", {}),
+    ]
+    disabled_any = False
+    for method, url, body in endpoints:
+        try:
+            if method == "DELETE":
+                r = await session.delete(url, headers=headers, timeout=15.0)
+            else:
+                r = await session.post(url, headers=headers, json=body, timeout=15.0)
+            if r.status_code in (200, 204):
+                log(f"[mfa] disable all MFA OK via {method} {url} (HTTP {r.status_code})")
+                disabled_any = True
+        except Exception as exc:
+            log(f"[mfa] disable all MFA note ({url}): {exc}")
+    return disabled_any
+
+
+async def _unenroll_factor(session: AsyncSession, *, access_token: str, factor_id: str, code: str = "", log=print) -> bool:
+    from user_agent_profile import (
+        WINDOWS_USER_AGENT as _UA,
+        SEC_CH_UA as _SEC_CH_UA,
+        SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
+        SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
+    )
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "User-Agent": _UA,
+        "sec-ch-ua": _SEC_CH_UA,
+        "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+    }
+    payload = {"factor_id": factor_id, "factor_type": "totp"}
+    if code:
+        payload["code"] = code
+    endpoints = [
         ("DELETE", f"{_BASE}/accounts/mfa/user/factors/{factor_id}", None),
-        ("POST", f"{_BASE}/accounts/mfa/user/unenroll", {"factor_id": factor_id}),
         ("DELETE", f"{_BASE}/accounts/mfa/factors/{factor_id}", None),
-        ("POST", f"{_BASE}/accounts/mfa/unenroll", {"factor_id": factor_id}),
-        ("POST", f"{_BASE}/accounts/mfa/user/delete_factor", {"factor_id": factor_id}),
+        ("POST", f"{_BASE}/accounts/mfa/user/unenroll", payload),
+        ("POST", f"{_BASE}/accounts/mfa/unenroll", payload),
+        ("POST", f"{_BASE}/accounts/mfa/user/delete_factor", payload),
         ("DELETE", f"{_BASE}/accounts/mfa/{factor_id}", None),
     ]
     for method, url, body in endpoints:
@@ -508,11 +567,11 @@ async def change_or_enable_2fa_in_session(
     cookies: list[dict[str, Any]] | None = None,
     log=print,
 ) -> dict[str, Any]:
-    """Bật 2FA mới hoặc đổi 2FA (kích hoạt 2FA mới rồi xóa sạch tất cả 2FA cũ)."""
-    # 1. Ghi nhận danh sách các factor cũ đang tồn tại (nếu có)
+    """Bật 2FA mới hoặc đổi 2FA (tắt sạch toàn bộ 2FA cũ, đăng ký duy nhất 1 2FA mới)."""
+    # 1. Tắt toàn bộ 2FA cũ & quét các factor cũ
     old_factor_ids: list[str] = []
     try:
-        mfa_info = await _check_mfa_info(session, access_token=access_token, log=log)
+        mfa_info = await _check_mfa_info(session, access_token=access_token, cookies=cookies, log=log)
         factors = mfa_info.get("factors") or []
         if isinstance(factors, list):
             for f in factors:
@@ -521,8 +580,11 @@ async def change_or_enable_2fa_in_session(
                     old_factor_ids.append(fid)
         if old_factor_ids:
             log(f"[mfa] phát hiện {len(old_factor_ids)} factor 2FA cũ: {old_factor_ids}")
+            for old_id in old_factor_ids:
+                await _unenroll_factor(session, access_token=access_token, factor_id=old_id, log=log)
+        await _disable_all_mfa(session, access_token=access_token, log=log)
     except Exception as exc:
-        log(f"[mfa] check existing factors warning: {exc}")
+        log(f"[mfa] check/disable existing factors note: {exc}")
 
     # 2. Enroll new 2FA factor
     enroll_data, access_token = await _enroll_totp(
@@ -548,16 +610,9 @@ async def change_or_enable_2fa_in_session(
         log=log,
     )
 
-    # 4. Sau khi 2FA mới đã active, tiến hành xóa triệt để TẤT CẢ các factor 2FA cũ
-    if old_factor_ids:
-        for old_id in old_factor_ids:
-            if old_id != factor_id:
-                log(f"[mfa] đang xóa bỏ factor 2FA cũ ({old_id})...")
-                await _unenroll_factor(session, access_token=access_token, factor_id=old_id, log=log)
-
-    # 5. Kiểm tra lại lần cuối để đảm bảo chỉ còn duy nhất 1 factor mới
+    # 4. Sau khi 2FA mới đã active, quét xóa triệt để mọi factor cũ khác factor_id mới
     try:
-        final_info = await _check_mfa_info(session, access_token=access_token, log=log)
+        final_info = await _check_mfa_info(session, access_token=access_token, cookies=cookies, log=log)
         final_factors = final_info.get("factors") or []
         if isinstance(final_factors, list):
             for f in final_factors:
