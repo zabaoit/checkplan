@@ -41,11 +41,14 @@
     successPane: $('chpwd-success-pane'),
     successGpayPane: $('chpwd-success-gpay-pane'),
     successApplePane: $('chpwd-success-apple-pane'),
+    successPlusPane: $('chpwd-success-plus-pane'),
     badgeGpay: $('chpwd-badge-gpay'),
     badgeApple: $('chpwd-badge-apple'),
+    badgePlus: $('chpwd-badge-plus'),
     btnCopySuccess: $('chpwd-btn-copy-success'),
     btnCopyGpay: $('chpwd-btn-copy-gpay'),
     btnCopyApple: $('chpwd-btn-copy-apple'),
+    btnCopyPlus: $('chpwd-btn-copy-plus'),
     btnCopyMomo: $('chpwd-btn-copy-momo'),
     btnExportCsv: $('chpwd-btn-export-csv'),
     btnCopyError: $('chpwd-btn-copy-error'),
@@ -298,8 +301,14 @@
         ? appleLines.join('\n')
         : 'Chưa có tài khoản chỉ có Apple Pay.';
     }
+    if (dom.successPlusPane) {
+      dom.successPlusPane.textContent = otherSuccessLines.length
+        ? otherSuccessLines.join('\n')
+        : 'Chưa có tài khoản PLUS / Khác.';
+    }
     if (dom.badgeGpay) dom.badgeGpay.textContent = gpayLines.length;
     if (dom.badgeApple) dom.badgeApple.textContent = appleLines.length;
+    if (dom.badgePlus) dom.badgePlus.textContent = otherSuccessLines.length;
 
     const allSuccess = [...gpayLines, ...appleLines, ...otherSuccessLines];
     if (dom.successPane) {
@@ -533,6 +542,13 @@
     if (dom.successApplePane && dom.successApplePane.textContent && !dom.successApplePane.textContent.startsWith('Chưa có')) {
       window.GptUi.copyText(dom.successApplePane.textContent);
       Dialog.alert({ message: 'Đã copy danh sách tài khoản Apple Pay Only!' });
+    }
+  });
+
+  dom.btnCopyPlus?.addEventListener('click', () => {
+    if (dom.successPlusPane && dom.successPlusPane.textContent && !dom.successPlusPane.textContent.startsWith('Chưa có')) {
+      window.GptUi.copyText(dom.successPlusPane.textContent);
+      Dialog.alert({ message: 'Đã copy danh sách tài khoản PLUS / Khác!' });
     }
   });
 
