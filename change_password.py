@@ -323,6 +323,8 @@ async def _change_password_once(
                     sess,
                     access_token=access_token,
                     cookies=cookies,
+                    old_secret=secret,
+                    password=current_password,
                     log=log,
                 )
             except MfaError as exc:

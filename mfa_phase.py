@@ -478,7 +478,7 @@ async def _check_mfa_info(
     return {}
 
 
-async def _disable_all_mfa(session: AsyncSession, *, access_token: str, log=print) -> bool:
+async def _disable_all_mfa(session: AsyncSession, *, access_token: str, code: str = "", password: str = "", log=print) -> bool:
     """Gửi các lệnh tắt triệt để toàn bộ 2FA cũ trên tài khoản."""
     from user_agent_profile import (
         WINDOWS_USER_AGENT as _UA,
@@ -497,16 +497,22 @@ async def _disable_all_mfa(session: AsyncSession, *, access_token: str, log=prin
         "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
         "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
     }
+    payload: dict[str, Any] = {}
+    if code:
+        payload["code"] = code
+    if password:
+        payload["password"] = password
+
     endpoints = [
-        ("DELETE", f"{_BASE}/accounts/mfa", None),
-        ("POST", f"{_BASE}/accounts/mfa/disable", {}),
-        ("POST", f"{_BASE}/accounts/mfa/user/disable", {}),
+        ("DELETE", f"{_BASE}/accounts/mfa", payload),
+        ("POST", f"{_BASE}/accounts/mfa/disable", payload),
+        ("POST", f"{_BASE}/accounts/mfa/user/disable", payload),
     ]
     disabled_any = False
     for method, url, body in endpoints:
         try:
             if method == "DELETE":
-                r = await session.delete(url, headers=headers, timeout=15.0)
+                r = await session.delete(url, headers=headers, json=body if body else None, timeout=15.0)
             else:
                 r = await session.post(url, headers=headers, json=body, timeout=15.0)
             if r.status_code in (200, 204):
@@ -517,7 +523,15 @@ async def _disable_all_mfa(session: AsyncSession, *, access_token: str, log=prin
     return disabled_any
 
 
-async def _unenroll_factor(session: AsyncSession, *, access_token: str, factor_id: str, code: str = "", log=print) -> bool:
+async def _unenroll_factor(
+    session: AsyncSession,
+    *,
+    access_token: str,
+    factor_id: str,
+    code: str = "",
+    password: str = "",
+    log=print,
+) -> bool:
     from user_agent_profile import (
         WINDOWS_USER_AGENT as _UA,
         SEC_CH_UA as _SEC_CH_UA,
@@ -535,21 +549,26 @@ async def _unenroll_factor(session: AsyncSession, *, access_token: str, factor_i
         "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
         "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
     }
-    payload = {"factor_id": factor_id, "factor_type": "totp"}
+    payload: dict[str, Any] = {"factor_id": factor_id, "factor_type": "totp"}
     if code:
         payload["code"] = code
+    if password:
+        payload["password"] = password
+
     endpoints = [
-        ("DELETE", f"{_BASE}/accounts/mfa/user/factors/{factor_id}", None),
-        ("DELETE", f"{_BASE}/accounts/mfa/factors/{factor_id}", None),
+        ("DELETE", f"{_BASE}/accounts/mfa/user/factors/{factor_id}", payload),
+        ("DELETE", f"{_BASE}/accounts/mfa/factors/{factor_id}", payload),
         ("POST", f"{_BASE}/accounts/mfa/user/unenroll", payload),
         ("POST", f"{_BASE}/accounts/mfa/unenroll", payload),
         ("POST", f"{_BASE}/accounts/mfa/user/delete_factor", payload),
-        ("DELETE", f"{_BASE}/accounts/mfa/{factor_id}", None),
+        ("DELETE", f"{_BASE}/accounts/mfa/{factor_id}", payload),
+        ("DELETE", f"https://auth.openai.com/api/accounts/mfa/factors/{factor_id}", payload),
+        ("POST", f"https://auth.openai.com/api/accounts/mfa/unenroll", payload),
     ]
     for method, url, body in endpoints:
         try:
             if method == "DELETE":
-                r = await session.delete(url, headers=headers, timeout=15.0)
+                r = await session.delete(url, headers=headers, json=body if body else None, timeout=15.0)
             else:
                 r = await session.post(url, headers=headers, json=body, timeout=15.0)
             if r.status_code in (200, 204):
@@ -565,9 +584,18 @@ async def change_or_enable_2fa_in_session(
     *,
     access_token: str,
     cookies: list[dict[str, Any]] | None = None,
+    old_secret: str | None = None,
+    password: str | None = None,
     log=print,
 ) -> dict[str, Any]:
     """Bật 2FA mới hoặc đổi 2FA (tắt sạch toàn bộ 2FA cũ, đăng ký duy nhất 1 2FA mới)."""
+    old_code = ""
+    if old_secret:
+        try:
+            old_code = generate_code(old_secret)
+        except Exception:
+            pass
+
     # 1. Tắt toàn bộ 2FA cũ & quét các factor cũ
     old_factor_ids: list[str] = []
     try:
@@ -581,8 +609,21 @@ async def change_or_enable_2fa_in_session(
         if old_factor_ids:
             log(f"[mfa] phát hiện {len(old_factor_ids)} factor 2FA cũ: {old_factor_ids}")
             for old_id in old_factor_ids:
-                await _unenroll_factor(session, access_token=access_token, factor_id=old_id, log=log)
-        await _disable_all_mfa(session, access_token=access_token, log=log)
+                await _unenroll_factor(
+                    session,
+                    access_token=access_token,
+                    factor_id=old_id,
+                    code=old_code,
+                    password=password or "",
+                    log=log,
+                )
+        await _disable_all_mfa(
+            session,
+            access_token=access_token,
+            code=old_code,
+            password=password or "",
+            log=log,
+        )
     except Exception as exc:
         log(f"[mfa] check/disable existing factors note: {exc}")
 
@@ -618,8 +659,15 @@ async def change_or_enable_2fa_in_session(
             for f in final_factors:
                 fid = f.get("id") if isinstance(f, dict) else None
                 if fid and fid != factor_id:
-                    log(f"[mfa] dọn dẹp thêm factor thừa ({fid})...")
-                    await _unenroll_factor(session, access_token=access_token, factor_id=fid, log=log)
+                    log(f"[mfa] dọn dẹp factor thừa ({fid})...")
+                    await _unenroll_factor(
+                        session,
+                        access_token=access_token,
+                        factor_id=fid,
+                        code=first_code,
+                        password=password or "",
+                        log=log,
+                    )
     except Exception as exc:
         log(f"[mfa] final mfa verify warning: {exc}")
 
