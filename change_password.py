@@ -198,7 +198,7 @@ async def change_password(
             ):
                 log("[chpwd] pure-request exhausted; falling back to browser login")
                 try:
-                    from session_phase import get_session_browser
+                    from session_phase import get_session as get_session_browser
 
                     browser_session = await get_session_browser(
                         email=email,
