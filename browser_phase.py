@@ -27,7 +27,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from config import Settings, ensure_runtime_dirs, prepare_profile_dir
@@ -165,6 +165,80 @@ def _safe_is_closed(p) -> bool:
         return bool(p.is_closed())
     except Exception:
         return True
+
+
+_AUTHORIZE_NAV_ABORT_MARKERS = (
+    "ns_binding_aborted",
+    "err_aborted",
+    "navigation interrupted by another navigation",
+)
+
+
+def _is_authorize_navigation_aborted(exc: BaseException) -> bool:
+    """Return True khi authorize navigation đã bắt đầu nhưng Playwright báo abort."""
+    message = str(exc or "").lower()
+    return any(marker in message for marker in _AUTHORIZE_NAV_ABORT_MARKERS)
+
+
+async def _navigate_authorize_url(page, authorize_url: str, *, log) -> None:
+    """Đi tới authorize URL, phục hồi navigation-abort nhưng không che lỗi thật.
+
+    Firefox/Camoufox có thể báo ``NS_BINDING_ABORTED`` khi OAuth redirect thay thế
+    request ``page.goto`` đang chờ. Khi đó page có thể đã ở auth.openai.com; nếu
+    vẫn còn chatgpt.com thì dùng ``window.location.assign`` trong cùng context để
+    giữ nguyên cookie/NextAuth transaction.
+    """
+    try:
+        await page.goto(authorize_url, wait_until="domcontentloaded", timeout=60000)
+        return
+    except Exception as exc:
+        if not _is_authorize_navigation_aborted(exc):
+            raise
+        log(
+            "[browser] authorize navigation bị redirect hủy "
+            "(NS_BINDING_ABORTED) — kiểm tra page hiện tại trước khi retry"
+        )
+
+    await asyncio.sleep(0.5)
+    screen = await _detect_screen(page)
+    if screen not in ("chatgpt", "unknown"):
+        log(
+            f"[browser] authorize redirect recovered screen={screen} "
+            f"url={page.url.split('?')[0]}"
+        )
+        return
+
+    log(
+        "[browser] authorize vẫn ở chatgpt.com — fallback "
+        "window.location.assign trong cùng context"
+    )
+    try:
+        await page.evaluate("url => window.location.assign(url)", authorize_url)
+    except Exception as exc:
+        # evaluate thường bị hủy khi chính location.assign phá execution context.
+        # Chỉ bỏ qua navigation-abort; lỗi khác phải được quan sát rõ.
+        if not _is_authorize_navigation_aborted(exc) and "context was destroyed" not in str(exc).lower():
+            raise BrowserPhaseError(
+                f"authorize location.assign failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    deadline = time.monotonic() + 20.0
+    last_screen = screen
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.4)
+        last_screen = await _detect_screen(page)
+        if last_screen == "auth_error":
+            raise BrowserPhaseError(f"authorize redirected tới auth error: {page.url}")
+        if last_screen not in ("chatgpt", "unknown"):
+            log(
+                f"[browser] authorize redirect recovered screen={last_screen} "
+                f"url={page.url.split('?')[0]}"
+            )
+            return
+    raise BrowserPhaseError(
+        f"authorize navigation không rời chatgpt.com sau recovery; "
+        f"screen={last_screen} url={page.url}"
+    )
 
 
 _GEOIP_CACHE_MAX_AGE = 86400  # 24h
@@ -581,6 +655,134 @@ async def _detect_screen(page) -> str:
     return "unknown"
 
 
+_OTP_SWITCH_TEXT_RE = re.compile(
+    r"(?:one[\s-]*time\s+code|"
+    r"log\s+in\s+with\s+(?:a\s+)?code|"
+    r"email(?:\s+me)?\s+(?:a\s+)?code|"
+    r"send(?:\s+me)?\s+(?:a\s+)?code|"
+    r"use\s+(?:a\s+)?(?:email|verification)\s+code|"
+    r"continue\s+with\s+email)",
+    re.IGNORECASE,
+)
+_OTP_INPUT_SELECTOR = (
+    'input[name="code"], input[autocomplete="one-time-code"], '
+    'input[inputmode="numeric"]'
+)
+
+
+async def _wait_otp_input_visible(page, *, timeout_seconds: float) -> bool:
+    """Đợi OTP input bằng DOM, không phụ thuộc URL hoặc text của auth UI."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            otp_input = page.locator(_OTP_INPUT_SELECTOR).first
+            if await otp_input.is_visible(timeout=300):
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.25)
+    return False
+
+
+async def _visible_auth_actions(page) -> tuple[list[tuple[Any, str]], list[str]]:
+    """Collect action elements + text để chọn OTP fallback và log DOM gọn."""
+    matched: list[tuple[Any, str]] = []
+    visible_texts: list[str] = []
+    actions = page.locator('button, a, [role="button"]')
+    try:
+        count = min(await actions.count(), 60)
+    except Exception:
+        return matched, visible_texts
+
+    for index in range(count):
+        action = actions.nth(index)
+        try:
+            if not await action.is_visible(timeout=200):
+                continue
+            text = " ".join((await action.text_content(timeout=300) or "").split())
+        except Exception:
+            continue
+        if not text:
+            continue
+        if text not in visible_texts:
+            visible_texts.append(text[:100])
+        if _OTP_SWITCH_TEXT_RE.search(text):
+            matched.append((action, text))
+    return matched, visible_texts
+
+
+async def _switch_password_login_to_otp(
+    page,
+    *,
+    log,
+    mark_otp_started: Callable[[], None] | None = None,
+) -> str:
+    """Chuyển password-login sai sang OTP, return ``ui`` hoặc ``api``.
+
+    Ưu tiên click action đang hiển thị để giữ đúng auth transaction. Selector
+    không khóa vào một tag/text duy nhất vì OpenAI thay đổi copy khá thường xuyên.
+    Nếu UI không expose action phù hợp thì GET endpoint gửi OTP giống continue_url
+    của nhánh register. Mọi failure đều fail-fast, không để state machine lặp tới
+    job timeout.
+    """
+    matched, visible_texts = await _visible_auth_actions(page)
+    click_errors: list[str] = []
+    for action, text in matched:
+        try:
+            await action.click(timeout=5000)
+            if mark_otp_started is not None:
+                mark_otp_started()
+            log(f"[flow] clicked OTP fallback action: {text[:80]}")
+        except Exception as exc:
+            # Click có thể báo abort trong khi navigation thực tế đã chạy.
+            if await _wait_otp_input_visible(page, timeout_seconds=2.0):
+                if mark_otp_started is not None:
+                    mark_otp_started()
+                log(f"[flow] OTP screen ready after click redirect: {text[:80]}")
+                return "ui"
+            click_errors.append(f"{text[:40]}: {type(exc).__name__}: {exc}")
+            continue
+
+        if await _wait_otp_input_visible(page, timeout_seconds=12.0):
+            log("[flow] one-time code fallback ready — OTP input visible")
+            return "ui"
+        raise BrowserPhaseError(
+            f"đã click OTP fallback {text!r} nhưng OTP input không xuất hiện; "
+            f"URL: {page.url}"
+        )
+
+    actions_preview = " | ".join(visible_texts[:12]) or "<none>"
+    if click_errors:
+        log(f"[flow] OTP fallback action click failed: {' | '.join(click_errors)[:300]}")
+    else:
+        log(f"[flow] OTP fallback action not found; visible actions: {actions_preview}")
+
+    # UI copy/tag đã đổi hoặc action không render: dùng đúng endpoint send OTP mà
+    # register flow nhận trong continue_url. Top-level navigation giữ auth cookies.
+    send_url = "https://auth.openai.com/api/accounts/email-otp/send"
+    log("[flow] OTP fallback via direct email-otp/send navigation")
+    try:
+        await page.goto(send_url, wait_until="domcontentloaded", timeout=30000)
+        if mark_otp_started is not None:
+            mark_otp_started()
+    except Exception as exc:
+        if not _is_authorize_navigation_aborted(exc):
+            raise BrowserPhaseError(
+                f"OTP fallback API navigation failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        if mark_otp_started is not None:
+            mark_otp_started()
+        log("[flow] OTP fallback navigation redirected/aborted — checking OTP DOM")
+
+    if await _wait_otp_input_visible(page, timeout_seconds=12.0):
+        log("[flow] direct OTP fallback ready — OTP input visible")
+        return "api"
+    raise BrowserPhaseError(
+        f"không thể chuyển password login sang OTP; visible actions={actions_preview!r}; "
+        f"URL: {page.url}"
+    )
+
+
 async def _skip_passkey(page, *, log, leave_timeout: float = 10.0) -> bool:
     """Skip passkey enrollment page. Returns True khi đã rời khỏi passkey URL.
 
@@ -670,6 +872,7 @@ async def _skip_passkey(page, *, log, leave_timeout: float = 10.0) -> bool:
 
 async def _drive_signup_flow(
     *, ctx, page, request, mail_provider, callback_holder, otp_started_at, log,
+    mark_otp_started: Callable[[], None] | None = None,
     overall_timeout: float = 240.0,
 ) -> tuple[str, float]:
     """State machine: check URL/DOM hiện tại, dispatch handler tương ứng.
@@ -688,7 +891,8 @@ async def _drive_signup_flow(
     _otp_reclick_done = False
     _otp_js_submit_done = False
     _otp_api_done = False
-    one_time_code_mode = False  # True sau khi click "Log in with a one-time code"
+    one_time_code_mode = False  # True sau khi chuyển password login sang OTP
+    otp_fallback_attempted = False
     tried_codes: set[str] = set()  # codes đã submit + bị reject
     pending_codes: list[str] = []  # codes chưa submit (mail delay catch)
     last_screen = None
@@ -775,6 +979,8 @@ async def _drive_signup_flow(
                     if continue_url.startswith("/"):
                         continue_url = f"https://auth.openai.com{continue_url}"
                     await page.goto(continue_url, wait_until="domcontentloaded")
+                    if mark_otp_started is not None:
+                        mark_otp_started()
                 await asyncio.sleep(1.0)
                 continue
             body_str = json.dumps(body) if isinstance(body, dict) else str(body or "")
@@ -788,23 +994,34 @@ async def _drive_signup_flow(
             if login_attempted:
                 # Detect sai password → click "Log in with a one-time code" để dùng OTP thay thế
                 if same_screen_count >= 3:
+                    err_text = ""
                     try:
                         err_el = page.locator('[role="alert"], [class*="error"]').first
-                        err_text = await err_el.text_content(timeout=300)
-                        if err_text and any(k in err_text.lower() for k in ("incorrect", "wrong", "invalid")):
-                            log(f"[flow] login password wrong ({err_text.strip()[:60]}) — trying one-time code fallback")
-                            otc_btn = page.locator(
-                                'button:has-text("Log in with a one-time code"), '
-                                'a:has-text("Log in with a one-time code")'
-                            ).first
-                            await otc_btn.click(timeout=5000)
-                            log("[flow] clicked 'Log in with a one-time code' — waiting for OTP screen")
-                            one_time_code_mode = True
-                            login_attempted = False  # reset để không loop vào đây nữa
-                            await asyncio.sleep(2.0)
-                            continue
+                        err_text = await err_el.text_content(timeout=300) or ""
                     except Exception:
                         pass
+                    if err_text and any(k in err_text.lower() for k in ("incorrect", "wrong", "invalid")):
+                        if otp_fallback_attempted:
+                            raise BrowserPhaseError(
+                                f"password login vẫn sai sau OTP fallback; URL: {page.url}"
+                            )
+                        otp_fallback_attempted = True
+                        log(
+                            f"[flow] login password wrong ({err_text.strip()[:60]}) "
+                            "— switching to one-time code"
+                        )
+                        fallback_source = await _switch_password_login_to_otp(
+                            page,
+                            log=log,
+                            mark_otp_started=mark_otp_started,
+                        )
+                        log(f"[flow] one-time code mode active (source={fallback_source})")
+                        one_time_code_mode = True
+                        login_attempted = False
+                        if mark_otp_started is not None:
+                            mark_otp_started()
+                        await asyncio.sleep(0.5)
+                        continue
                 await asyncio.sleep(1.0)
                 continue
             log("[flow] login with password")
@@ -835,6 +1052,8 @@ async def _drive_signup_flow(
             continue
 
         if screen == "otp":
+            if mark_otp_started is not None:
+                mark_otp_started()
             # Detect "incorrect code" error → thử code kế (nếu có) hoặc resend + poll
             # Gate bằng `otp_submitted`: chỉ check error sau khi đã submit ít nhất 1 OTP.
             # Lý do: trang /email-verification fresh load có thể có element
@@ -1842,11 +2061,8 @@ async def run_browser_phase(
             _authorize_url = await _bootstrap_oauth_url(
                 page, email=request.email, device_id=device_id, logging_id=logging_id, log=log,
             )
-            await page.goto(_authorize_url, wait_until="domcontentloaded", timeout=60000)
+            await _navigate_authorize_url(page, _authorize_url, log=log)
             await asyncio.sleep(1.0)
-
-            # Mốc check-point: sắp drive flow (sẽ trigger OTP send).
-            _mark_otp_started()
 
             _callback_url, _otp_seconds = await _drive_signup_flow(
                 ctx=ctx, page=page, request=request,
@@ -1854,6 +2070,7 @@ async def run_browser_phase(
                 callback_holder=callback_holder,
                 otp_started_at=otp_started_at,
                 log=log,
+                mark_otp_started=_mark_otp_started,
             )
 
             _state = (
@@ -1923,11 +2140,8 @@ async def run_browser_phase(
             _authorize_url = await _bootstrap_oauth_url(
                 page, email=request.email, device_id=device_id, logging_id=logging_id, log=log,
             )
-            await page.goto(_authorize_url, wait_until="domcontentloaded", timeout=60000)
+            await _navigate_authorize_url(page, _authorize_url, log=log)
             await asyncio.sleep(1.0)
-
-            # Mốc check-point: sắp drive flow (sẽ trigger OTP send).
-            _mark_otp_started()
 
             _callback_url, _otp_seconds = await _drive_signup_flow(
                 ctx=ctx, page=page, request=request,
@@ -1935,6 +2149,7 @@ async def run_browser_phase(
                 callback_holder=callback_holder,
                 otp_started_at=otp_started_at,
                 log=log,
+                mark_otp_started=_mark_otp_started,
             )
 
             _state = (
