@@ -53,6 +53,7 @@
     momoModalPlan: $('momo-qr-modal-plan'),
     momoModalPaylink: $('momo-qr-modal-paylink'),
     momoModalCopyLink: $('momo-qr-modal-copy-link'),
+    momoModalOpenBrowserBtn: $('momo-qr-modal-open-browser-btn'),
     momoModalOpenBtn: $('momo-qr-modal-open-btn'),
     momoModalLoading: $('momo-qr-modal-loading'),
   };
@@ -555,10 +556,12 @@
   });
 
   let activeMomoUrl = '';
+  let activeMomoJobId = null;
 
   function openMomoModal(jobId) {
     const job = state.jobs.get(jobId);
     if (!job) return;
+    activeMomoJobId = jobId;
 
     if (dom.momoModalEmail) dom.momoModalEmail.textContent = job.email || '-';
     if (dom.momoModalPlan) dom.momoModalPlan.textContent = job.plan || 'Trial · 0 đ (MoMo)';
@@ -616,6 +619,25 @@
     if (activeMomoUrl && activeMomoUrl !== '#') {
       window.GptUi.copyText(activeMomoUrl);
       await Dialog.alert({ message: 'Đã copy link thanh toán MoMo!' });
+    }
+  });
+
+  dom.momoModalOpenBrowserBtn?.addEventListener('click', async () => {
+    if (!activeMomoJobId) return;
+    const btn = dom.momoModalOpenBrowserBtn;
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang mở trình duyệt...';
+    try {
+      const res = await api(`/api/change-password/jobs/${activeMomoJobId}/open-browser`, { method: 'POST' });
+      if (res.success) {
+        await Dialog.alert({ message: '🚀 Đã mở trình duyệt tự động nạp session! Trình duyệt sẽ tự chuyển thẳng vào trang Checkout MoMo.' });
+      }
+    } catch (err) {
+      await Dialog.alert({ message: 'Không thể mở trình duyệt: ' + err.message });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
     }
   });
 

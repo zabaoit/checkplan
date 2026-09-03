@@ -1132,6 +1132,68 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
     })
 
 
+@app.post("/api/change-password/jobs/{job_id}/open-browser")
+async def open_browser_for_job(job_id: str) -> JSONResponse:
+    cm = get_change_password_manager()
+    if job_id not in cm.jobs:
+        raise HTTPException(404, "job not found")
+    job = cm.jobs[job_id]
+    session_data = job.session_data or {}
+    cookies = session_data.get("__cookies") or session_data.get("cookies")
+    offer = session_data.get("offer_details") or {}
+    cs_id = offer.get("session_id") or offer.get("checkout_session_id")
+
+    target_url = f"https://chatgpt.com/checkout/openai_llc/{cs_id}" if cs_id else "https://chatgpt.com/#pricing"
+
+    async def _launch_bg():
+        try:
+            from camoufox.async_api import AsyncCamoufox
+            from user_agent_profile import CAMOUFOX_OS as _CAMOUFOX_OS
+            from config import Settings
+
+            settings = Settings()
+            profile_dir = settings.profiles_dir / f"momo_{job.id}"
+
+            cf = AsyncCamoufox(
+                headless=False,
+                persistent_context=True,
+                user_data_dir=str(profile_dir),
+                os=list(_CAMOUFOX_OS),
+                locale="en-US",
+                geoip=False,
+            )
+            ctx = await cf.__aenter__()
+
+            if cookies:
+                cookie_list = []
+                for k, v in cookies.items() if isinstance(cookies, dict) else []:
+                    cookie_list.append({
+                        "name": k,
+                        "value": str(v),
+                        "domain": ".chatgpt.com",
+                        "path": "/",
+                    })
+                    cookie_list.append({
+                        "name": k,
+                        "value": str(v),
+                        "domain": "chatgpt.com",
+                        "path": "/",
+                    })
+                if cookie_list:
+                    try:
+                        await ctx.add_cookies(cookie_list)
+                    except Exception as ce:
+                        logger.warning("add_cookies error: %s", ce)
+
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as exc:
+            logger.error("open_browser_for_job exception: %s", exc)
+
+    asyncio.create_task(_launch_bg())
+    return JSONResponse({"success": True, "target_url": target_url})
+
+
 @app.post("/api/change-password/jobs/stop-all")
 async def stop_all_change_password_jobs() -> JSONResponse:
     cm = get_change_password_manager()
