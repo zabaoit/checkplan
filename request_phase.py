@@ -501,7 +501,14 @@ def _step_oauth_init(session, auth_url: str, log: Callable) -> str:
     # Extract device_id from cookies
     device_id = ""
     try:
-        device_id = session.cookies.get("oai-did", "")
+        jar = getattr(getattr(session, "cookies", None), "jar", None)
+        if jar:
+            for cookie in jar:
+                if cookie.name == "oai-did" and cookie.value:
+                    device_id = str(cookie.value)
+                    break
+        if not device_id:
+            device_id = str(session.cookies.get("oai-did", "") or "")
     except Exception:
         pass
     if not device_id:

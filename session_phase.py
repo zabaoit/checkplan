@@ -44,6 +44,31 @@ class SessionError(Exception):
     """Login/session fetch failed."""
 
 
+def _get_cookie_safe(sess: Any, name: str) -> str:
+    """Safely extract cookie value without triggering CookieConflict when cookie exists on multiple domains."""
+    try:
+        jar = getattr(getattr(sess, "cookies", None), "jar", None)
+        if jar:
+            for cookie in jar:
+                if cookie.name == name and cookie.value:
+                    return str(cookie.value)
+    except Exception:
+        pass
+    try:
+        cookies_obj = getattr(sess, "cookies", None)
+        if cookies_obj is not None:
+            for c in cookies_obj:
+                if getattr(c, "name", "") == name and getattr(c, "value", ""):
+                    return str(c.value)
+    except Exception:
+        pass
+    try:
+        return str(sess.cookies.get(name, "") or "")
+    except Exception:
+        pass
+    return ""
+
+
 # JS: fetch /api/auth/session trong page context chatgpt.com
 _FETCH_SESSION_JS = r"""
 async () => {
@@ -972,7 +997,7 @@ async def get_session_pure_request(
                     # warm-retry 403 trên cùng cookie jar trước khi đi tiếp.
                     r = _navigate_oauth_authorize(sess, au, log)
                     land = str(getattr(r, "url", "") or au)
-                    did = sess.cookies.get("oai-did", "") or did
+                    did = _get_cookie_safe(sess, "oai-did") or did
                     return sess, did, au, land
                 except Exception as e:
                     last_exc = e
@@ -1203,7 +1228,7 @@ async def get_session_pure_request(
                     "__Secure-next-auth.session-token",
                     "__Secure-next-auth.session-token.0",
                 ):
-                    if session.cookies.get(name):
+                    if _get_cookie_safe(session, name):
                         return True
                 return False
 
