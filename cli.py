@@ -514,12 +514,13 @@ def web_cmd(
     signal.signal(signal.SIGINT, _quiet_shutdown)
 
     try:
+        from web.server import app as fastapi_app
         uvicorn.run(
-            "gpt_signup_hybrid.web.server:app",
+            fastapi_app,
             host=host,
             port=port,
             reload=reload,
-            log_level="critical",
+            log_level="info",
             timeout_graceful_shutdown=1,
         )
     except SystemExit:

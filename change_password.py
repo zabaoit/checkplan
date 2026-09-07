@@ -770,13 +770,14 @@ async def change_password_after_reauth(
         "mfa" in verify_page_type.lower()
         or "/mfa-challenge/" in verify_continue_url.lower()
     )
+    reset_referer = "https://auth.openai.com/reset-password/new-password"
     if requires_pre_reset_mfa:
         pre_reset_factor_id = factor_id(verify_data)
         if not pre_reset_factor_id:
             raise ChangePasswordError(
                 "MFA required before password reset but challenge ID is missing"
             )
-        await complete_mfa(
+        mfa_data = await complete_mfa(
             sess,
             factor_id=pre_reset_factor_id,
             secret=secret,
@@ -784,12 +785,27 @@ async def change_password_after_reauth(
             log=log,
             consume_callback=False,
         )
+        mfa_continue_url = str(mfa_data.get("continue_url") or "")
+        if mfa_continue_url:
+            if mfa_continue_url.startswith("/"):
+                mfa_continue_url = urljoin("https://auth.openai.com", mfa_continue_url)
+            log(f"[chpwd] navigating to post-MFA continue_url: {mfa_continue_url.split('?', 1)[0]}")
+            reset_referer = mfa_continue_url
+            await _get_with_warm_retry(
+                sess,
+                mfa_continue_url,
+                headers=_chatgpt_headers(referer=f"https://auth.openai.com/mfa-challenge/{pre_reset_factor_id}"),
+                log=log,
+                label="post-mfa continue",
+                allow_redirects=True,
+                timeout=30.0,
+            )
 
     log("[chpwd] API reset: submitting new password")
     reset_resp = await sess.post(
         "https://auth.openai.com/api/accounts/password/reset",
         headers={
-            **_auth_headers(referer="https://auth.openai.com/reset-password/new-password"),
+            **_auth_headers(referer=reset_referer),
             "Content-Type": "application/json",
             "Origin": "https://auth.openai.com",
         },
