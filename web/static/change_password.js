@@ -177,7 +177,7 @@
           html += `<span class="payment-tag payment-tag-applepay">Apple Pay</span>`;
         } else if (mUpper === 'GPAY' || mUpper === 'GOOGLE PAY' || mUpper === 'GOOGLEPAY') {
           html += `<span class="payment-tag payment-tag-gpay">Google Pay</span>`;
-        } else if (mUpper === 'MOMO' && !isTrialZero) {
+        } else if (mUpper === 'MOMO') {
           html += `<span class="payment-tag payment-tag-momo">MoMo</span>`;
           html += `<button class="btn-momo-qr" data-action="momo-qr" data-id="${escHtml(job.id)}" title="Quét mã QR MoMo">🌸 QR</button>`;
         }
