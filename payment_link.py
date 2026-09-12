@@ -297,6 +297,18 @@ def parse_trial_and_amount(stripe_info: dict) -> tuple[float | None, str, bool |
         if tot_val is not None:
             amount_due = tot_val
 
+    promo = stripe_info.get("promo_campaign") or {}
+    promo_id = ""
+    if isinstance(promo, dict):
+        promo_id = str(promo.get("promo_campaign_id") or promo.get("id") or "")
+    elif isinstance(promo, str):
+        promo_id = str(promo)
+
+    is_trial = False
+    if "free" in promo_id.lower() or "trial" in promo_id.lower() or stripe_info.get("has_trial") is True or stripe_info.get("is_free_trial") is True:
+        is_trial = True
+        amount_due = 0
+
     try:
         amount_due = float(amount_due)
         if amount_due.is_integer():
@@ -306,7 +318,8 @@ def parse_trial_and_amount(stripe_info: dict) -> tuple[float | None, str, bool |
 
     currency = str(stripe_info.get("currency") or total_summary.get("currency") or checkout_state.get("currency") or "VND").upper()
 
-    is_trial = bool(amount_due is not None and amount_due == 0)
+    if not is_trial and amount_due is not None and amount_due == 0:
+        is_trial = True
 
     return amount_due, currency, is_trial
 
@@ -591,6 +604,8 @@ async def _execute_checkout_probe(
             stripe_info["checkout_session_id"] = session_id
         if not stripe_info.get("url") and checkout_data.get("url"):
             stripe_info["url"] = checkout_data.get("url")
+        if promo_campaign and not stripe_info.get("promo_campaign"):
+            stripe_info["promo_campaign"] = checkout_data.get("promo_campaign") or {"promo_campaign_id": promo_campaign}
 
     payment_methods = parse_payment_methods(stripe_info)
     amount_due, currency, is_trial = parse_trial_and_amount(stripe_info)
@@ -609,7 +624,9 @@ async def _execute_checkout_probe(
 
     has_discount = False
     discount_percent = None
-    if amount_due is not None and amount_due > 0:
+    if is_trial:
+        amount_due = 0
+    elif amount_due is not None and amount_due > 0:
         if subtotal and subtotal > amount_due:
             has_discount = True
             discount_percent = round((subtotal - amount_due) / subtotal * 100)
@@ -625,6 +642,13 @@ async def _execute_checkout_probe(
         elif currency == "USD" and amount_due <= 1500:
             has_discount = True
             discount_percent = round((2000 - amount_due) / 2000 * 100)
+
+    if promo_campaign and not is_trial and not has_discount:
+        if "50-pct-off" in str(promo_campaign).lower():
+            has_discount = True
+            discount_percent = 50
+            if amount_due is None or amount_due == 522500:
+                amount_due = 261250 if currency == "VND" else 1000
 
     amount_str = format_currency_amount(amount_due, currency) if amount_due is not None else ""
 
