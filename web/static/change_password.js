@@ -162,7 +162,8 @@
       const methods = methodsStr ? methodsStr.split(',').map(s => s.trim()) : [];
       
       let html = '';
-      if (customTag) {
+      const isTrialZero = !customTag || customTag.includes('0 đ') || customTag.toLowerCase().includes('trial');
+      if (customTag && !isTrialZero) {
         html += `<span class="plan-badge plan-offer-discount">${escHtml(customTag)}</span>`;
       } else {
         html += `<span class="plan-badge plan-offer-yes">Trial · 0 đ</span>`;
@@ -176,7 +177,7 @@
           html += `<span class="payment-tag payment-tag-applepay">Apple Pay</span>`;
         } else if (mUpper === 'GPAY' || mUpper === 'GOOGLE PAY' || mUpper === 'GOOGLEPAY') {
           html += `<span class="payment-tag payment-tag-gpay">Google Pay</span>`;
-        } else if (mUpper === 'MOMO') {
+        } else if (mUpper === 'MOMO' && !isTrialZero) {
           html += `<span class="payment-tag payment-tag-momo">MoMo</span>`;
           html += `<button class="btn-momo-qr" data-action="momo-qr" data-id="${escHtml(job.id)}" title="Quét mã QR MoMo">🌸 QR</button>`;
         }
