@@ -68,6 +68,12 @@
     dom.btnSave = $("proxy-pool-save");
     dom.showRawLogs = $("proxy-show-raw-logs");
     dom.statusLine = $("proxy-pool-status");
+    // 2Proxy section
+    dom.twoProxyEnabled = $("twoproxy-enabled");
+    dom.twoProxyKeys = $("twoproxy-keys");
+    dom.twoProxyLive = $("twoproxy-live-seconds");
+    dom.twoProxyTestBtn = $("btn-twoproxy-test");
+    dom.twoProxyStatus = $("twoproxy-status");
     // Paste modal
     dom.pasteModal = $("proxy-paste-modal");
     dom.pasteTextarea = $("proxy-paste-textarea");
@@ -330,6 +336,7 @@
 
   // ── Load from backend ──────────────────────────────────────────────────
   function load() {
+    loadTwoProxy();
     if (dom.showRawLogs) {
       dom.showRawLogs.checked = Settings.get("proxy.show_raw_in_logs") === true;
     }
@@ -355,6 +362,7 @@
   // ── Save ───────────────────────────────────────────────────────────────
   function save() {
     if (state.busy) return;
+    saveTwoProxy(true);
     var proxies = collectProxies();
     state.busy = true;
     dom.btnSave.disabled = true;
@@ -428,6 +436,115 @@
         dom.btnTestAll.disabled = false;
         if (dom.btnShuffle) dom.btnShuffle.disabled = false;
         updateClearDeadButton();
+      });
+  }
+
+  // ── 2Proxy Section ──────────────────────────────────────────────────
+  var twoProxyState = { loaded: false, busy: false };
+
+  function setTwoProxyStatus(text, kind) {
+    if (!dom.twoProxyStatus) return;
+    dom.twoProxyStatus.textContent = text || "";
+    dom.twoProxyStatus.className = "proxy-pool-status muted" + (kind ? " proxy-pool-status-" + kind : "");
+  }
+
+  function loadTwoProxy() {
+    if (!dom.twoProxyKeys) return Promise.resolve();
+    return api("/api/proxy/twoproxy")
+      .then(function (data) {
+        if (dom.twoProxyEnabled) dom.twoProxyEnabled.checked = !!data.enabled;
+        if (dom.twoProxyKeys) dom.twoProxyKeys.value = (data.keys || []).join("\n");
+        if (dom.twoProxyLive) dom.twoProxyLive.value = String(data.live_seconds != null ? data.live_seconds : 120);
+        twoProxyState.loaded = true;
+        var rt = data.runtime || {};
+        if (rt.key_count) {
+          setTwoProxyStatus("Đã tải " + rt.key_count + " key 2Proxy (" + (data.enabled ? "Đang bật" : "Đang tắt") + ").", null);
+        }
+      })
+      .catch(function (err) {
+        setTwoProxyStatus("Load 2Proxy thất bại: " + err.message, "fail");
+      });
+  }
+
+  function saveTwoProxy(silent) {
+    if (!dom.twoProxyKeys) return Promise.resolve();
+    var keys = (dom.twoProxyKeys.value || "")
+      .split("\n")
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; });
+    var enabled = dom.twoProxyEnabled ? !!dom.twoProxyEnabled.checked : false;
+    var liveSeconds = dom.twoProxyLive ? parseInt(dom.twoProxyLive.value, 10) || 120 : 120;
+
+    if (!silent) {
+      setTwoProxyStatus("Đang lưu 2Proxy…", null);
+    }
+
+    return api("/api/proxy/twoproxy", {
+      method: "POST",
+      body: JSON.stringify({
+        enabled: enabled,
+        keys: keys,
+        live_seconds: liveSeconds,
+      }),
+    })
+      .then(function (data) {
+        if (!silent) {
+          var extra = data.settings_persist_error ? " (cảnh báo: " + data.settings_persist_error + ")" : "";
+          setTwoProxyStatus(
+            "Đã lưu 2Proxy (" + keys.length + " key, " + (enabled ? "BẬT" : "TẮT") + ")." + extra,
+            data.settings_persist_error ? "fail" : "ok"
+          );
+        }
+      })
+      .catch(function (err) {
+        if (!silent) {
+          setTwoProxyStatus("Lưu 2Proxy thất bại: " + err.message, "fail");
+        }
+      });
+  }
+
+  function testTwoProxy() {
+    if (twoProxyState.busy || !dom.twoProxyKeys) return;
+    var keys = (dom.twoProxyKeys.value || "")
+      .split("\n")
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; });
+
+    if (!keys.length) {
+      setTwoProxyStatus("Vui lòng nhập ít nhất 1 key 2Proxy để test.", "fail");
+      return;
+    }
+
+    twoProxyState.busy = true;
+    if (dom.twoProxyTestBtn) dom.twoProxyTestBtn.disabled = true;
+    setTwoProxyStatus("Đang test " + keys.length + " key 2Proxy qua API...", null);
+
+    var liveSeconds = dom.twoProxyLive ? parseInt(dom.twoProxyLive.value, 10) || 120 : 120;
+
+    // Lưu cấu hình trước khi test
+    saveTwoProxy(true)
+      .then(function () {
+        return api("/api/proxy/twoproxy/test", {
+          method: "POST",
+          body: JSON.stringify({
+            keys: keys,
+            live_seconds: liveSeconds,
+          }),
+        });
+      })
+      .then(function (data) {
+        var summary = "Test 2Proxy xong: " + (data.live || 0) + " live / " + (data.failed || 0) + " lỗi (" + (data.total || 0) + " tổng).";
+        var details = (data.results || []).map(function (r, i) {
+          return "[" + (i + 1) + "] " + (r.key_masked || "key") + ": " + (r.detail || (r.ok ? "OK" : "Lỗi"));
+        }).join(" | ");
+        setTwoProxyStatus(summary + (details ? " — " + details : ""), (data.failed || 0) > 0 ? "fail" : "ok");
+      })
+      .catch(function (err) {
+        setTwoProxyStatus("Test 2Proxy thất bại: " + err.message, "fail");
+      })
+      .finally(function () {
+        twoProxyState.busy = false;
+        if (dom.twoProxyTestBtn) dom.twoProxyTestBtn.disabled = false;
       });
   }
 
@@ -583,6 +700,26 @@
           dom.showRawLogs.checked ? "ok" : null
         );
       });
+    }
+
+    // 2Proxy events
+    if (dom.twoProxyEnabled) {
+      dom.twoProxyEnabled.addEventListener("change", function () {
+        saveTwoProxy(false);
+      });
+    }
+    if (dom.twoProxyLive) {
+      dom.twoProxyLive.addEventListener("change", function () {
+        saveTwoProxy(false);
+      });
+    }
+    if (dom.twoProxyKeys) {
+      dom.twoProxyKeys.addEventListener("change", function () {
+        saveTwoProxy(true);
+      });
+    }
+    if (dom.twoProxyTestBtn) {
+      dom.twoProxyTestBtn.addEventListener("click", testTwoProxy);
     }
 
     if (dom.tgSave) dom.tgSave.addEventListener("click", saveTelegram);

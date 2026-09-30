@@ -63,6 +63,7 @@ _EXACT_KEYS: frozenset[str] = frozenset([
     "proxy.pool", "proxy.rotation_mode", "proxy.show_raw_in_logs",
     "proxy.probe_endpoint", "proxy.probe_timeout", "proxy.max_tries",
     "proxy.sid_len", "proxy.sid_retry_per_line", "proxy.probe_concurrency",
+    "proxy.twoproxy_enabled", "proxy.twoproxy_keys", "proxy.twoproxy_live_seconds",
     "mail_mode.current", "mail_mode.worker_config",
     "reg_mode.current",
     "hme.runner.action", "hme.runner.count_per_cycle",
@@ -83,7 +84,7 @@ _EXACT_KEYS: frozenset[str] = frozenset([
 
 # Sensitive keys — audit log redact value thành "***" (R10.5)
 _SENSITIVE_KEYS: frozenset[str] = frozenset([
-    "proxy.pool", "autoreg.api_key",
+    "proxy.pool", "proxy.twoproxy_keys", "autoreg.api_key",
     "mail_mode.worker_config",
     "telegram.bot_token",
     "web.auth_token",
@@ -251,6 +252,44 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         if not (lo <= value <= hi):
             raise RepositoryError(
                 "set", ValueError(f"{key}: must be in [{lo}, {hi}], got {value}")
+            )
+        return
+
+    if key == "proxy.twoproxy_enabled":
+        if not isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be bool, got {type(value).__name__}")
+            )
+        return
+
+    if key == "proxy.twoproxy_keys":
+        if not isinstance(value, list):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be list, got {type(value).__name__}")
+            )
+        if len(value) > 200:
+            raise RepositoryError(
+                "set", ValueError(f"{key}: too many keys ({len(value)}), max 200")
+            )
+        for idx, item in enumerate(value):
+            if not isinstance(item, str):
+                raise RepositoryError(
+                    "set", TypeError(f"{key}[{idx}]: must be str, got {type(item).__name__}")
+                )
+            if len(item) > 500:
+                raise RepositoryError(
+                    "set", ValueError(f"{key}[{idx}]: key too long ({len(item)}), max 500")
+                )
+        return
+
+    if key == "proxy.twoproxy_live_seconds":
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (0 <= value <= 600):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [0, 600], got {value}")
             )
         return
 

@@ -782,6 +782,105 @@ async def test_all_proxy(payload: TestAllProxyRequest) -> JSONResponse:
     })
 
 
+# ── 2Proxy Key Xoay Endpoints ──────────────────────────────────────────
+
+
+class SaveTwoProxyRequest(BaseModel):
+    enabled: bool = Field(default=False, description="Bật/tắt sử dụng 2Proxy")
+    keys: list[str] = Field(default_factory=list, description="Danh sách API key 2Proxy")
+    live_seconds: int = Field(default=120, description="Thời gian live IP (giây)")
+
+
+class TestTwoProxyRequest(BaseModel):
+    keys: list[str] | None = Field(default=None, description="Danh sách key cần test. None = dùng cấu hình đã lưu.")
+    live_seconds: int = Field(default=120, description="Thời gian live IP (giây)")
+
+
+@app.get("/api/proxy/twoproxy")
+async def get_twoproxy_config() -> JSONResponse:
+    """Trả cấu hình 2Proxy đã lưu trong DB + trạng thái runtime."""
+    from .twoproxy_pool import get_twoproxy_pool, normalize_keys
+
+    repo = _get_settings_repo()
+    enabled = bool(repo.get("proxy.twoproxy_enabled") or False)
+    keys = repo.get("proxy.twoproxy_keys") or []
+    live_seconds_val = repo.get("proxy.twoproxy_live_seconds")
+    live_seconds = int(live_seconds_val) if live_seconds_val is not None else 120
+    pool = get_twoproxy_pool()
+
+    return JSONResponse({
+        "enabled": enabled,
+        "keys": keys,
+        "live_seconds": live_seconds,
+        "runtime": pool.status(),
+    })
+
+
+@app.post("/api/proxy/twoproxy")
+async def save_twoproxy_config(payload: SaveTwoProxyRequest) -> JSONResponse:
+    """Lưu cấu hình 2Proxy vào Settings Store + reconfigure runtime TwoProxyPool."""
+    from db.repositories import RepositoryError
+    from .twoproxy_pool import get_twoproxy_pool, normalize_keys
+
+    keys = normalize_keys(payload.keys)
+    enabled = bool(payload.enabled)
+    live_seconds = max(0, min(600, int(payload.live_seconds)))
+
+    pool = get_twoproxy_pool()
+    pool.configure(enabled=enabled, keys=keys, live_seconds=live_seconds)
+
+    persist_error: str | None = None
+    try:
+        _get_settings_repo().bulk_set({
+            "proxy.twoproxy_enabled": enabled,
+            "proxy.twoproxy_keys": keys,
+            "proxy.twoproxy_live_seconds": live_seconds,
+        })
+    except RepositoryError as exc:
+        persist_error = str(exc)
+        _log.warning("write-through 2proxy config failed: %s", exc)
+
+    body: dict[str, Any] = {
+        "enabled": enabled,
+        "keys": keys,
+        "live_seconds": live_seconds,
+        "runtime": pool.status(),
+    }
+    if persist_error:
+        body["settings_persist_error"] = persist_error
+    return JSONResponse(body)
+
+
+@app.post("/api/proxy/twoproxy/test")
+async def test_twoproxy_keys(payload: TestTwoProxyRequest) -> JSONResponse:
+    """Gọi key xoay với live_seconds và test IP tuần tự cho danh sách các key."""
+    from .twoproxy_pool import get_twoproxy_pool, normalize_keys
+
+    if payload.keys is not None:
+        targets = normalize_keys(payload.keys)
+    else:
+        targets = normalize_keys(_get_settings_repo().get("proxy.twoproxy_keys") or [])
+
+    if not targets:
+        return JSONResponse({"results": [], "total": 0, "live": 0, "failed": 0})
+
+    pool = get_twoproxy_pool()
+    results = []
+    live = 0
+    for key in targets:
+        res = await pool.test_key(key, live_seconds=payload.live_seconds)
+        if res.get("ok"):
+            live += 1
+        results.append(res)
+
+    return JSONResponse({
+        "results": results,
+        "total": len(results),
+        "live": live,
+        "failed": len(results) - live,
+    })
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Unified SSE Endpoint (all channels multiplexed)
 # ─────────────────────────────────────────────────────────────────────
@@ -1161,6 +1260,70 @@ async def get_momo_qr_for_job(job_id: str) -> JSONResponse:
         "otp_code": otp_code,
         "promo_url": promo_url,
     })
+
+
+@app.post("/api/change-password/jobs/{job_id}/browser-momo-qr")
+async def get_browser_momo_qr_for_job(job_id: str) -> JSONResponse:
+    """Chạy trình duyệt ẩn Playwright: login -> mở trial -> chọn MoMo -> điền info -> lấy QR MoMo."""
+    cm = get_change_password_manager()
+    if job_id not in cm.jobs:
+        raise HTTPException(404, "job not found")
+    job = cm.jobs[job_id]
+    session_data = job.session_data or {}
+    secret = (session_data.get("new_secret") or session_data.get("secret") or job.secret or "")
+    proxy = getattr(job, "_active_proxy", None)
+
+    from browser_momo import fetch_momo_qr_via_browser
+
+    res = await fetch_momo_qr_via_browser(
+        email=job.email,
+        current_password=job.new_password or job.current_password or "",
+        secret=secret,
+        session_data=session_data,
+        proxy=proxy,
+        headless=True,
+        log=lambda msg: cm._job_log(job, msg),
+    )
+
+    if not res.get("ok"):
+        return JSONResponse({
+            "success": False,
+            "error": res.get("error", "Không thể lấy mã QR MoMo qua trình duyệt"),
+        }, status_code=500)
+
+    offer = session_data.get("offer_details") or {}
+    if res.get("momo_url"):
+        offer["momo_url"] = res["momo_url"]
+    if res.get("qr_data"):
+        offer["qr_data"] = res["qr_data"]
+    if res.get("qr_img"):
+        offer["qr_img"] = res["qr_img"]
+    session_data["offer_details"] = offer
+    job.session_data = session_data
+    cm._broadcast_job(job)
+
+    otp_code = ""
+    if secret:
+        try:
+            import pyotp
+            otp_code = pyotp.TOTP(secret).now()
+        except Exception:
+            pass
+
+    return JSONResponse({
+        "success": True,
+        "job_id": job_id,
+        "qr_data": res.get("qr_data"),
+        "qr_img": res.get("qr_img"),
+        "momo_url": res.get("momo_url"),
+        "is_momo_native_qr": True,
+        "email": job.email,
+        "password": job.new_password or job.current_password,
+        "secret": secret,
+        "otp_code": otp_code,
+        "profile": res.get("profile"),
+    })
+
 
 
 @app.post("/api/change-password/jobs/{job_id}/open-browser")

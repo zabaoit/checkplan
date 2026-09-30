@@ -258,8 +258,9 @@ async def _resolve_pool_proxy(log=None, *, knobs: dict | None = None) -> tuple[s
 
 
 async def _resolve_job_proxy(log=None, *, knobs: dict | None = None) -> tuple[str | None, str | None]:
-    """Resolve proxy cho 1 job — gate theo ``pool.rotation_mode``.
+    """Resolve proxy cho 1 job — ưu tiên 2Proxy nếu bật, fallback pool.
 
+    - ``2Proxy`` active → ``twoproxy_pool.acquire()`` (lease key riêng cho job, tự động xoay IP).
     - ``probe`` → ``acquire_live_proxy`` (health-check + SID-rotate). Url cho
       replay cùng IP, raw line cho mark_dead key.
     - ``round_robin`` / ``random`` → ``pool.pick()`` straight, materialize
@@ -267,6 +268,14 @@ async def _resolve_job_proxy(log=None, *, knobs: dict | None = None) -> tuple[st
 
     Pool rỗng / toàn-dead / cạn max_tries → ``(None, None)`` (caller → direct).
     """
+    from .twoproxy_pool import get_twoproxy_pool
+    twoproxy = get_twoproxy_pool()
+    if twoproxy.is_active():
+        if log:
+            log("[proxy] source=2proxy")
+        url, key = await twoproxy.acquire(log=log)
+        return (url, key)
+
     pool = get_proxy_pool()
     source = await _next_proxy_source(has_pool=pool.is_active())
     if source is None:
@@ -358,6 +367,12 @@ def _hydrate_proxy_pool_from_settings(settings: dict) -> None:
     mode = settings.get("proxy.rotation_mode") if "proxy.rotation_mode" in settings else None
     if proxies is not None or mode is not None:
         get_proxy_pool().configure(proxies, mode=mode)
+    from .twoproxy_pool import get_twoproxy_pool
+    get_twoproxy_pool().configure(
+        enabled=settings.get("proxy.twoproxy_enabled"),
+        keys=settings.get("proxy.twoproxy_keys"),
+        live_seconds=settings.get("proxy.twoproxy_live_seconds"),
+    )
     from .proxy_format import set_show_raw_proxy_logs
     set_show_raw_proxy_logs(bool(settings.get("proxy.show_raw_in_logs", False)))
     # Cache 7 proxy health/acquire knob (UI store > .env > default) — load 1 lần.
@@ -2055,6 +2070,11 @@ class JobManager:
                 job.finished_at = time.time()
                 self._job_log(job, fatal_line, persisted=True)
                 self._broadcast_job(job)
+        finally:
+            active_line = getattr(job, "_active_proxy_line", None)
+            if active_line:
+                from .twoproxy_pool import get_twoproxy_pool
+                get_twoproxy_pool().release(active_line)
 
     async def _post_reg_steps(self, job: Job, result: SignupResult) -> None:
         """Execute enabled post-reg toggles — song song khi cả 2 bật.
@@ -2941,6 +2961,10 @@ class SessionJobManager:
                 self._broadcast_job(job)
         finally:
             self._tasks.pop(job.id, None)
+            active_line = getattr(job, "_active_proxy_line", None)
+            if active_line:
+                from .twoproxy_pool import get_twoproxy_pool
+                get_twoproxy_pool().release(active_line)
             if job.status == "error" and job.id in self.jobs:
                 await self._maybe_auto_retry(job)
 
@@ -4005,6 +4029,10 @@ class LinkJobManager:
                 self._broadcast_job(job)
         finally:
             self._tasks.pop(job.id, None)
+            active_line = getattr(job, "_active_proxy_line", None)
+            if active_line:
+                from .twoproxy_pool import get_twoproxy_pool
+                get_twoproxy_pool().release(active_line)
             if job.status == "error" and job.id in self.jobs:
                 await self._maybe_auto_retry(job)
 

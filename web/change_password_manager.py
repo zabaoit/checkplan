@@ -135,7 +135,7 @@ class ChangePasswordJobManager:
         self.order: list[str] = []
         self._max = max_concurrent
         self._job_timeout = _DEFAULT_JOB_TIMEOUT
-        self._use_proxy = False
+        self._use_proxy = True
         self._tasks: dict[str, asyncio.Task] = {}
         self._job_queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
@@ -180,6 +180,7 @@ class ChangePasswordJobManager:
                 self._job_timeout = value
         if "chpwd.use_proxy" in settings:
             self._use_proxy = bool(settings["chpwd.use_proxy"])
+        self._ensure_workers()
 
     def _broadcast(self, event: dict[str, Any]) -> None:
         if _sse_mux is not None:
@@ -405,7 +406,9 @@ class ChangePasswordJobManager:
         return list(job.log_lines) if job else []
 
     async def _begin_job_proxy(self, job: ChangePasswordJob) -> str | None:
-        if not self._use_proxy:
+        from .twoproxy_pool import get_twoproxy_pool
+        twoproxy = get_twoproxy_pool()
+        if not self._use_proxy and not twoproxy.is_active():
             return None
         knobs = getattr(job, "_proxy_knobs", None) or _current_proxy_knobs()
         job._proxy_knobs = knobs
@@ -485,6 +488,10 @@ class ChangePasswordJobManager:
             self._broadcast_job(job)
         finally:
             self._tasks.pop(job.id, None)
+            active_line = getattr(job, "_active_proxy_line", None)
+            if active_line:
+                from .twoproxy_pool import get_twoproxy_pool
+                get_twoproxy_pool().release(active_line)
 
 
 _change_password_manager: ChangePasswordJobManager | None = None

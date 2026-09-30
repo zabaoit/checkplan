@@ -83,7 +83,7 @@ COPY --from=builder --chown=appuser:appuser /home/appuser/.cache /home/appuser/.
 # Repo root có __init__.py + __main__.py → package resolve trực tiếp (no shim).
 COPY --chown=appuser:appuser . /app/gpt_signup_hybrid/
 COPY --chown=appuser:appuser docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Pre-create runtime/ owned by appuser. BẮT BUỘC: named volume mount đè lên
 # path này; nếu path vắng trong image, Docker tạo volume root-owned →
@@ -101,4 +101,4 @@ USER appuser
 # không opt-in. Trong container BẮT BUỘC bind 0.0.0.0 (publish ra host loopback
 # 127.0.0.1 + token auth + reverse-proxy ngoài → an toàn).
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
-CMD ["xvfb-run", "-a", "python", "-m", "gpt_signup_hybrid", "web", "--host", "0.0.0.0", "--port", "8083", "--unsafe-expose-network"]
+CMD ["xvfb-run", "-a", "python", "-m", "gpt_signup_hybrid", "web", "--host", "0.0.0.0", "--port", "8085", "--unsafe-expose-network"]

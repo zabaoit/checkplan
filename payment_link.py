@@ -297,29 +297,23 @@ def parse_trial_and_amount(stripe_info: dict) -> tuple[float | None, str, bool |
         if tot_val is not None:
             amount_due = tot_val
 
-    promo = stripe_info.get("promo_campaign") or {}
-    promo_id = ""
-    if isinstance(promo, dict):
-        promo_id = str(promo.get("promo_campaign_id") or promo.get("id") or "")
-    elif isinstance(promo, str):
-        promo_id = str(promo)
-
-    is_trial = False
-    if "free" in promo_id.lower() or "trial" in promo_id.lower() or stripe_info.get("has_trial") is True or stripe_info.get("is_free_trial") is True:
-        is_trial = True
-        amount_due = 0
-
     try:
-        amount_due = float(amount_due)
-        if amount_due.is_integer():
-            amount_due = int(amount_due)
+        if amount_due is not None:
+            amount_due = float(amount_due)
+            if amount_due.is_integer():
+                amount_due = int(amount_due)
     except (TypeError, ValueError):
         amount_due = None
 
     currency = str(stripe_info.get("currency") or total_summary.get("currency") or checkout_state.get("currency") or "VND").upper()
 
-    if not is_trial and amount_due is not None and amount_due == 0:
+    is_trial = False
+    if amount_due is not None and amount_due == 0:
         is_trial = True
+    elif stripe_info.get("has_trial") is True or stripe_info.get("is_free_trial") is True:
+        if amount_due is None or amount_due == 0:
+            is_trial = True
+            amount_due = 0
 
     return amount_due, currency, is_trial
 
@@ -586,7 +580,7 @@ async def _execute_checkout_probe(
     if not session_id:
         return {"success": False, "error": "Response checkout thiếu session_id"}
 
-    if str(session_id).startswith("cs_") and publishable_key:
+    if publishable_key and session_id:
         try:
             stripe_info = await _call_stripe_init_data(
                 session,
@@ -604,8 +598,8 @@ async def _execute_checkout_probe(
             stripe_info["checkout_session_id"] = session_id
         if not stripe_info.get("url") and checkout_data.get("url"):
             stripe_info["url"] = checkout_data.get("url")
-        if promo_campaign and not stripe_info.get("promo_campaign"):
-            stripe_info["promo_campaign"] = checkout_data.get("promo_campaign") or {"promo_campaign_id": promo_campaign}
+        if "promo_campaign" in checkout_data and not stripe_info.get("promo_campaign"):
+            stripe_info["promo_campaign"] = checkout_data.get("promo_campaign")
 
     payment_methods = parse_payment_methods(stripe_info)
     amount_due, currency, is_trial = parse_trial_and_amount(stripe_info)
@@ -638,17 +632,12 @@ async def _execute_checkout_probe(
                 discount_percent = 50
         elif currency == "VND" and amount_due <= 300000:
             has_discount = True
-            discount_percent = round((522500 - amount_due) / 522500 * 100)
+            base = subtotal if (subtotal and subtotal > amount_due) else 522500
+            discount_percent = round((base - amount_due) / base * 100)
         elif currency == "USD" and amount_due <= 1500:
             has_discount = True
-            discount_percent = round((2000 - amount_due) / 2000 * 100)
-
-    if promo_campaign and not is_trial and not has_discount:
-        if "50-pct-off" in str(promo_campaign).lower():
-            has_discount = True
-            discount_percent = 50
-            if amount_due is None or amount_due == 522500:
-                amount_due = 261250 if currency == "VND" else 1000
+            base = subtotal if (subtotal and subtotal > amount_due) else 2000
+            discount_percent = round((base - amount_due) / base * 100)
 
     amount_str = format_currency_amount(amount_due, currency) if amount_due is not None else ""
 
@@ -684,7 +673,7 @@ async def check_gpt_offer_async(
     try:
         trial_res = await _execute_checkout_probe(session, access_token, promo_campaign="plus-1-month-free", timeout=timeout)
         if trial_res.get("success"):
-            if trial_res.get("has_trial"):
+            if trial_res.get("has_trial") and trial_res.get("amount_due") == 0:
                 trial_res["promo_label"] = "Trial · 0 đ"
                 trial_res["promo_campaign_id"] = "plus-1-month-free"
                 trial_res["promo_url"] = "https://chatgpt.com/?promo_campaign=plus-1-month-free#pricing"
@@ -714,7 +703,7 @@ async def check_gpt_offer_async(
             res["promo_campaign_id"] = p_id
             res["promo_url"] = f"https://chatgpt.com/?promo_campaign={p_id}#pricing" if p_id else "https://chatgpt.com/#pricing"
             last_res = res
-            if res.get("has_trial"):
+            if res.get("has_trial") and res.get("amount_due") == 0:
                 res["promo_label"] = "Trial · 0 đ"
                 return res
 

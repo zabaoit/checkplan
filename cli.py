@@ -450,7 +450,7 @@ def _version_cmd() -> None:
 @app.command("web")
 def web_cmd(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
-    port: int = typer.Option(8083, "--port", help="Bind port."),
+    port: int = typer.Option(8085, "--port", help="Bind port."),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload (dev mode)."),
     unsafe_expose_network: bool = typer.Option(
         False,

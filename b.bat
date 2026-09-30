@@ -7,4 +7,4 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-".venv\Scripts\python.exe" -m gpt_signup_hybrid web --host 127.0.0.1 --port 8083
+".venv\Scripts\python.exe" -m gpt_signup_hybrid web --host 127.0.0.1 --port 8085

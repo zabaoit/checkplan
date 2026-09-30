@@ -712,6 +712,55 @@
       </header>
 
       <div class="settings-section-body">
+        <!-- ── 2Proxy Key Xoay Section ── -->
+        <div class="card p-3 mb-3 border-subtle twoproxy-box" style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle, rgba(255,255,255,0.08)); border-radius: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+            <div>
+              <h3 style="margin: 0; font-size: 15px; font-weight: 600; color: var(--text-main, #f3f4f6);">2Proxy key xoay - Reg + Offer 0đ</h3>
+              <p class="muted small" style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-muted, #9ca3af);">
+                Hai job Reg/Offer đồng thời giữ hai key riêng; mỗi lần gọi API lấy IP live 2 phút.
+              </p>
+            </div>
+            <label class="toggle-wrap" title="Bật/tắt sử dụng 2Proxy cho Reg và Offer 0đ" style="margin: 0;">
+              <input type="checkbox" id="twoproxy-enabled" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label" style="font-weight: 600;">Dùng 2Proxy</span>
+            </label>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
+            <span class="small fw-bold" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted, #9ca3af);">DANH SÁCH KEY (MỖI DÒNG 1 KEY)</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="small muted" style="font-size: 11px; font-weight: 600;">LIVE IP</span>
+              <select id="twoproxy-live-seconds" class="hme-select-sm" style="padding: 2px 8px; font-size: 12px;">
+                <option value="120" selected>2 phút (120s)</option>
+                <option value="60">1 phút (60s)</option>
+                <option value="0">Xoay ngay</option>
+              </select>
+            </div>
+          </div>
+
+          <textarea
+            id="twoproxy-keys"
+            class="input-control font-monospace w-100"
+            rows="3"
+            placeholder="Nhập các API key 2Proxy, mỗi key một dòng"
+            spellcheck="false"
+            style="width: 100%; box-sizing: border-box; resize: vertical; margin-bottom: 8px; font-family: monospace; font-size: 13px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-subtle, rgba(255,255,255,0.1)); border-radius: 6px; padding: 8px; color: inherit;"
+          ></textarea>
+
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap;">
+            <button id="btn-twoproxy-test" class="btn btn-ghost btn-small" type="button" style="font-size: 12px; padding: 4px 12px;">Test 2Proxy</button>
+            <span class="small muted" style="font-size: 12px; color: var(--text-muted, #9ca3af);">Gọi key xoay với live=2 phút và test IP tuần tự cho danh sách các key.</span>
+          </div>
+
+          <div id="twoproxy-status" class="proxy-pool-status muted" style="margin-bottom: 8px; font-size: 12px;"></div>
+
+          <div class="small muted" style="font-size: 11.5px; line-height: 1.5; padding: 8px 10px; background: rgba(255,255,255,0.03); border-radius: 6px; border: 1px dashed var(--border-subtle, rgba(255,255,255,0.08)); color: var(--text-muted, #9ca3af);">
+            Khi bật, 2Proxy được ưu tiên cho tab Reg và Offer 0đ, đồng thời tự tắt 5Star (hoặc proxy pool khác nếu có). Hãy bật thêm công tắc Proxy ở tab Reg; quá số job sẽ chờ key, còn API lỗi hoặc thiếu key sẽ làm job báo lỗi thay vì chạy direct.
+          </div>
+        </div>
+
         <p class="settings-hint muted">
           Mỗi dòng 1 proxy, hỗ trợ 3 dạng:
           <code>host:port:user:pass</code> ·
@@ -980,6 +1029,7 @@
       </div>
     </div>
     <footer class="modal-foot">
+      <button id="momo-qr-modal-auto-browser-btn" class="btn btn-primary" type="button" style="padding: 6px 16px; background: linear-gradient(135deg, #10b981, #059669); border:none;">🤖 Auto lấy QR (Browser Ẩn)</button>
       <button id="momo-qr-modal-open-browser-btn" class="btn btn-momo-action" type="button" style="padding: 6px 16px;">🚀 Mở Tab Checkout & Copy Code Login</button>
       <button id="momo-qr-modal-copy-link" class="btn btn-ghost" type="button">Copy Link MoMo</button>
       <button id="momo-qr-modal-ok" class="btn btn-primary" type="button">Đóng</button>

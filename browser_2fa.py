@@ -32,7 +32,9 @@ async def rotate_2fa_via_browser(
     """Tắt toàn bộ 2FA cũ và kích hoạt 1 2FA mới duy nhất trong page browser."""
     from playwright.async_api import async_playwright
 
-    settings = Settings()
+    from config import load_settings
+
+    settings = load_settings()
     profile_dir = settings.profiles_dir / f"rotate2fa_{abs(hash(email)) % 100000}"
     profile_dir.mkdir(parents=True, exist_ok=True)
 
@@ -71,12 +73,10 @@ async def rotate_2fa_via_browser(
             "headless": headless,
             "args": ["--start-maximized", "--disable-blink-features=AutomationControlled"],
         }
-        if proxy:
-            # Parse proxy URL if needed
-            p_parts = proxy.split("://")
-            proto = p_parts[0] if len(p_parts) > 1 else "http"
-            p_host = p_parts[-1]
-            launch_kwargs["proxy"] = {"server": f"{proto}://{p_host}"}
+        from browser_momo import _parse_playwright_proxy
+        pw_proxy = _parse_playwright_proxy(proxy)
+        if pw_proxy:
+            launch_kwargs["proxy"] = pw_proxy
 
         # Try msedge -> chrome -> chromium
         for ch in ("msedge", "chrome", None):

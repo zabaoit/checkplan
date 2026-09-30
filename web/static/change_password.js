@@ -65,6 +65,7 @@
     momoModalPaylink: $('momo-qr-modal-paylink'),
     momoModalCopyLink: $('momo-qr-modal-copy-link'),
     momoModalOpenBrowserBtn: $('momo-qr-modal-open-browser-btn'),
+    momoModalAutoBrowserBtn: $('momo-qr-modal-auto-browser-btn'),
     momoModalLoading: $('momo-qr-modal-loading'),
   };
 
@@ -495,6 +496,13 @@
     }
   });
 
+  const modeEl = $('mode');
+  if (modeEl) {
+    modeEl.addEventListener('change', () => {
+      syncConfig().catch((err) => console.error(err));
+    });
+  }
+
   dom.btnClearInput.addEventListener('click', () => {
     dom.comboInput.value = '';
     updateComboCount();
@@ -721,6 +729,37 @@
     if (activeMomoUrl && activeMomoUrl !== '#') {
       window.GptUi.copyText(activeMomoUrl);
       await Dialog.alert({ message: 'Đã copy link thanh toán MoMo!' });
+    }
+  });
+
+  dom.momoModalAutoBrowserBtn?.addEventListener('click', async () => {
+    if (!activeMomoJobId) return;
+    const btn = dom.momoModalAutoBrowserBtn;
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang chạy ẩn lấy QR...';
+    if (dom.momoModalLoading) dom.momoModalLoading.style.display = 'block';
+    try {
+      const res = await api(`/api/change-password/jobs/${activeMomoJobId}/browser-momo-qr`, { method: 'POST' });
+      if (res.qr_img) {
+        dom.momoModalImg.src = res.qr_img;
+      } else if (res.qr_data) {
+        dom.momoModalImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&margin=8&data=${encodeURIComponent(res.qr_data)}`;
+      }
+      if (res.momo_url) {
+        activeMomoUrl = res.momo_url;
+        if (dom.momoModalPaylink) {
+          dom.momoModalPaylink.href = res.momo_url;
+          dom.momoModalPaylink.textContent = res.momo_url;
+        }
+      }
+      await Dialog.alert({ message: '🎉 Đã chạy ẩn trình duyệt thành công và trích xuất mã QR MoMo!' });
+    } catch (err) {
+      await Dialog.alert({ message: 'Lỗi chạy ẩn: ' + err.message });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
+      if (dom.momoModalLoading) dom.momoModalLoading.style.display = 'none';
     }
   });
 

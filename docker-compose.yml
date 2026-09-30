@@ -20,22 +20,22 @@ services:
     image: gsh:latest
     # --unsafe-expose-network: web guard từ chối bind 0.0.0.0 nếu không opt-in.
     # Container BẮT BUỘC bind 0.0.0.0; publish chỉ ra host 127.0.0.1 + token auth.
-    command: xvfb-run -a python -m gpt_signup_hybrid web --host 0.0.0.0 --port 8083 --unsafe-expose-network
+    command: xvfb-run -a python -m gpt_signup_hybrid web --host 0.0.0.0 --port 8085 --unsafe-expose-network
     env_file: .env
     environment:
-      # Hard-required: app bind 0.0.0.0 trong container → token bắt buộc.
-      # Fail-fast lúc 'compose up' nếu thiếu (rõ ràng hơn lỗi runtime).
-      - GPT_SIGNUP_WEB_TOKEN=${GPT_SIGNUP_WEB_TOKEN:?GPT_SIGNUP_WEB_TOKEN bắt buộc (web bind 0.0.0.0)}
+      # Token auth cho web UI khi bind container 0.0.0.0
+      - GPT_SIGNUP_WEB_TOKEN=${GPT_SIGNUP_WEB_TOKEN:-gptsignup2026}
     ports:
-      - "127.0.0.1:8083:8083"
+      - "8085:8085"
     volumes:
+      - .:/app/gpt_signup_hybrid
       - gsh-runtime:/app/gpt_signup_hybrid/runtime
     shm_size: "2gb"        # Firefox cần /dev/shm lớn, tránh crash
     mem_limit: "4g"
     restart: unless-stopped
     healthcheck:
       # GET / không auth → luôn 200 (web/server.py:1541). curl baked trong image.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8083/"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8085/"]
       interval: 30s
       timeout: 10s
       retries: 5

@@ -86,13 +86,13 @@ if not exist "runtime\har_hybrid" mkdir "runtime\har_hybrid"
 echo.
 echo ═══════════════════════════════════════════════════════════
 echo   √ Setup done. Starting web UI...
-echo   → http://127.0.0.1:8083/
+echo   → http://127.0.0.1:8085/
 echo.
 echo   Paste combo vao textarea + bam Run.
 echo   Format: email^|password^|refresh_token^|client_id
 echo ═══════════════════════════════════════════════════════════
 echo.
 
-.venv\Scripts\python -m gpt_signup_hybrid web --host 127.0.0.1 --port 8083
+.venv\Scripts\python -m gpt_signup_hybrid web --host 127.0.0.1 --port 8085
 
 pause
