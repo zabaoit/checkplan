@@ -475,6 +475,8 @@ class ChangePasswordJobManager:
         except ChangePasswordError as exc:
             job.status = "error"
             job.error = str(exc)
+            if getattr(exc, "data", None):
+                job.session_data = exc.data
             job.finished_at = time.time()
             self._note_proxy_failure(job, exc)
             self._job_log(job, f"[error] {exc}")

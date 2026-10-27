@@ -261,6 +261,23 @@ body {
   grid-template-rows: minmax(0, 1.12fr) minmax(0, 0.78fr) minmax(0, 0.46fr);
 }
 
+#tab-change-password {
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-template-areas:
+    "input   input   input   input   input   jobs  jobs  jobs  jobs  jobs"
+    "log     log     log     log     log     jobs  jobs  jobs  jobs  jobs"
+    "success success success success success success success error error error";
+}
+
+.success-split-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  flex: 1;
+  padding: 8px;
+  min-height: 140px;
+}
+
 @media (max-width: 1100px) {
   .grid {
     grid-template-columns: 1fr;
@@ -274,6 +291,18 @@ body {
     overflow: hidden;
     padding: 10px;
     gap: 10px;
+  }
+  #tab-change-password {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "input"
+      "jobs"
+      "log"
+      "success"
+      "error";
+  }
+  .success-split-grid {
+    grid-template-columns: 1fr;
   }
   #tab-session,
   #tab-link {

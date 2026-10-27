@@ -42,10 +42,12 @@ class ChangePasswordError(Exception):
         *,
         retryable: bool = False,
         committed: bool = False,
+        data: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.committed = committed
+        self.data = data
 
 
 def _base_headers(*, referer: str, accept: str) -> dict[str, str]:
@@ -1180,7 +1182,7 @@ async def fetch_session(
             if not offer_res.get("success"):
                 err_detail = offer_res.get("error") or "Khởi tạo checkout thất bại"
                 data["plan"] = "KHÔNG CÓ OFFER"
-                raise ChangePasswordError(f"KHÔNG CÓ OFFER: {err_detail}")
+                raise ChangePasswordError(f"KHÔNG CÓ OFFER: {err_detail}", data=data)
 
             pm_list = offer_res.get("payment_methods") or []
             pm_labels = []
@@ -1206,7 +1208,7 @@ async def fetch_session(
                 data["plan"] = plan_label
                 data["amount_str"] = amount_str
                 data["offer_details"] = offer_res
-                raise ChangePasswordError(plan_label)
+                raise ChangePasswordError(plan_label, data=data)
 
             if offer_res.get("has_discount") and not offer_res.get("has_trial"):
                 amount_str = offer_res.get("amount_str") or ""

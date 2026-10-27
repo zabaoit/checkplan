@@ -42,13 +42,17 @@
     successGpayPane: $('chpwd-success-gpay-pane'),
     successApplePane: $('chpwd-success-apple-pane'),
     successPlusPane: $('chpwd-success-plus-pane'),
+    successNoOfferPane: $('chpwd-success-no-offer-pane'),
+    errorPane: $('chpwd-error-pane'),
     badgeGpay: $('chpwd-badge-gpay'),
     badgeApple: $('chpwd-badge-apple'),
     badgePlus: $('chpwd-badge-plus'),
+    badgeNoOffer: $('chpwd-badge-no-offer'),
     btnCopySuccess: $('chpwd-btn-copy-success'),
     btnCopyGpay: $('chpwd-btn-copy-gpay'),
     btnCopyApple: $('chpwd-btn-copy-apple'),
     btnCopyPlus: $('chpwd-btn-copy-plus'),
+    btnCopyNoOffer: $('chpwd-btn-copy-no-offer'),
     btnCopyMomo: $('chpwd-btn-copy-momo'),
     btnExportCsv: $('chpwd-btn-export-csv'),
     btnCopyError: $('chpwd-btn-copy-error'),
@@ -255,13 +259,17 @@
     const gpayLines = [];
     const appleLines = [];
     const otherSuccessLines = [];
+    const noOfferLines = [];
     const errorLines = [];
     const pendingLoads = [];
 
     for (const id of state.order) {
       const job = state.jobs.get(id);
       if (!job) continue;
-      if (job.status === 'success') {
+      const isSuccess = job.status === 'success';
+      const isNoOffer = String(job.error || '').toUpperCase().includes('KHÔNG CÓ OFFER') || String(job.plan || '').toUpperCase().includes('KHÔNG CÓ OFFER');
+
+      if (isSuccess || isNoOffer) {
         const detail = detailCache.get(id);
         if (!detail) {
           pendingLoads.push(detailFor(id).then(() => renderOutputs()).catch(() => {}));
@@ -274,19 +282,24 @@
         } else if (detail.new_password) {
           line = `${job.email}|${detail.new_password}|${detail.secret || ''}`;
         } else {
-          line = `${job.email} -> ${job.plan || 'PLUS'}`;
+          const planText = job.plan || job.error || (isNoOffer ? 'KHÔNG CÓ OFFER' : 'PLUS');
+          line = `${job.email} -> ${planText}`;
         }
 
-        const planUpper = String(job.plan || '').toUpperCase();
-        const hasGpay = planUpper.includes('GPAY') || planUpper.includes('GOOGLE PAY') || planUpper.includes('GOOGLEPAY');
-        const hasApple = planUpper.includes('APPLE PAY') || planUpper.includes('APPLEPAY');
-
-        if (hasGpay) {
-          gpayLines.push(line);
-        } else if (hasApple) {
-          appleLines.push(line);
+        if (isNoOffer) {
+          noOfferLines.push(line);
         } else {
-          otherSuccessLines.push(line);
+          const planUpper = String(job.plan || job.error || '').toUpperCase();
+          const hasGpay = planUpper.includes('GPAY') || planUpper.includes('GOOGLE PAY') || planUpper.includes('GOOGLEPAY');
+          const hasApple = planUpper.includes('APPLE PAY') || planUpper.includes('APPLEPAY');
+
+          if (hasGpay) {
+            gpayLines.push(line);
+          } else if (hasApple) {
+            appleLines.push(line);
+          } else {
+            otherSuccessLines.push(line);
+          }
         }
       } else if (job.status === 'error') {
         errorLines.push(`${job.email} -> ${job.error || 'ERROR'}`);
@@ -308,11 +321,17 @@
         ? otherSuccessLines.join('\n')
         : 'Chưa có tài khoản PLUS / Khác.';
     }
+    if (dom.successNoOfferPane) {
+      dom.successNoOfferPane.textContent = noOfferLines.length
+        ? noOfferLines.join('\n')
+        : 'Chưa có tài khoản không có offer.';
+    }
     if (dom.badgeGpay) dom.badgeGpay.textContent = gpayLines.length;
     if (dom.badgeApple) dom.badgeApple.textContent = appleLines.length;
     if (dom.badgePlus) dom.badgePlus.textContent = otherSuccessLines.length;
+    if (dom.badgeNoOffer) dom.badgeNoOffer.textContent = noOfferLines.length;
 
-    const allSuccess = [...gpayLines, ...appleLines, ...otherSuccessLines];
+    const allSuccess = [...gpayLines, ...appleLines, ...otherSuccessLines, ...noOfferLines];
     if (dom.successPane) {
       dom.successPane.textContent = allSuccess.length
         ? allSuccess.join('\n')
@@ -320,7 +339,7 @@
     }
 
     if (dom.errorPane) {
-      dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'ERROR OUTPUT:\nemail -> KHÔNG CÓ OFFER';
+      dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'No errors yet.';
     }
     void pendingLoads;
   }
@@ -443,6 +462,17 @@
     window.GptUi.persistTextarea(LS_INPUT, dom.comboInput.value);
   });
 
+  $('chpwd-btn-sort-input').addEventListener('click', () => {
+    const rank = (line) => {
+      const email = line.split('|', 1)[0].trim();
+      const domain = email.match(/^[^\s@]+@(gmail\.com|googlemail\.com)$/i)?.[1].toLowerCase();
+      return domain === 'gmail.com' ? 0 : domain === 'googlemail.com' ? 1 : 2;
+    };
+    dom.comboInput.value = dom.comboInput.value.split('\n')
+      .sort((a, b) => rank(a) - rank(b)).join('\n');
+    dom.comboInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
   dom.btnRun.addEventListener('click', async () => {
     const combos = dom.comboInput.value.trim();
     if (!combos) {
@@ -533,6 +563,12 @@
     if (dom.successApplePane && dom.successApplePane.textContent && !dom.successApplePane.textContent.startsWith('Chưa có')) {
       all.push(dom.successApplePane.textContent);
     }
+    if (dom.successPlusPane && dom.successPlusPane.textContent && !dom.successPlusPane.textContent.startsWith('Chưa có')) {
+      all.push(dom.successPlusPane.textContent);
+    }
+    if (dom.successNoOfferPane && dom.successNoOfferPane.textContent && !dom.successNoOfferPane.textContent.startsWith('Chưa có')) {
+      all.push(dom.successNoOfferPane.textContent);
+    }
     const text = all.join('\n');
     if (text) {
       window.GptUi.copyText(text);
@@ -561,16 +597,23 @@
     }
   });
 
+  dom.btnCopyNoOffer?.addEventListener('click', () => {
+    if (dom.successNoOfferPane && dom.successNoOfferPane.textContent && !dom.successNoOfferPane.textContent.startsWith('Chưa có')) {
+      window.GptUi.copyText(dom.successNoOfferPane.textContent);
+      Dialog.alert({ message: 'Đã copy danh sách tài khoản không có offer!' });
+    }
+  });
+
   dom.btnExportCsv.addEventListener('click', async () => {
     const successJobIds = [];
     for (const id of state.order) {
       const job = state.jobs.get(id);
-      if (job && job.status === 'success') {
+      if (job && (job.status === 'success' || String(job.error || '').toUpperCase().includes('KHÔNG CÓ OFFER'))) {
         successJobIds.push(id);
       }
     }
     if (successJobIds.length === 0) {
-      await Dialog.alert({ message: 'No successful jobs to export.' });
+      await Dialog.alert({ message: 'No accounts to export.' });
       return;
     }
     dom.btnExportCsv.disabled = true;
@@ -584,7 +627,7 @@
         const currentPassword = d.current_password || '';
         const newPassword = d.new_password || '';
         const secret = d.secret || '';
-        const plan = d.plan || 'unknown';
+        const plan = d.plan || d.error || 'unknown';
         const row = [email, currentPassword, newPassword, secret, plan]
           .map(v => `"${String(v).replace(/"/g, '""')}"`)
           .join(',');
