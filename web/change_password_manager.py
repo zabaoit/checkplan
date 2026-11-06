@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 from change_password import ChangePasswordError, change_password
 from random_profile import random_profile
+from .change_email_jobs import (
+    PENDING, add_email_jobs, delete_email_job, recover_email_jobs, run_email_job, save_email_job,
+)
 
 from .manager import (
     _current_proxy_knobs,
@@ -70,6 +73,12 @@ class ChangePasswordJob:
     check_plan_only: bool = False
     skip_password_change: bool = False
     change_2fa_only: bool = False
+    change_email_only: bool = False
+    target_email: str = ""
+    mailbox_email: str = ""
+    mailbox_key: str = field(default="", repr=False)
+    email_change_stage: str = "prepared"
+    original_user_id: str = ""
     status: JobStatus = "queued"
     log_lines: list[str] = field(default_factory=list)
     error: str | None = None
@@ -83,6 +92,8 @@ class ChangePasswordJob:
 
     @property
     def mode(self) -> str:
+        if self.change_email_only:
+            return "change_email"
         if self.check_plan_only:
             return "check_plan"
         if self.change_2fa_only:
@@ -97,6 +108,8 @@ class ChangePasswordJob:
             "id": self.id,
             "email": self.email,
             "mode": self.mode,
+            "target_email": self.target_email,
+            "email_change_stage": self.email_change_stage if self.change_email_only else None,
             "status": self.status,
             "error": self.error,
             "has_session": self.session_data is not None,
@@ -123,7 +136,7 @@ class ChangePasswordJob:
         data["session_data"] = self.session_data
         data["current_password"] = self.current_password
         data["new_password"] = self.new_password
-        data["secret"] = (self.session_data or {}).get("new_secret") or (self.session_data or {}).get("secret") or self.secret
+        data["secret"] = self.secret if self.change_email_only else ((self.session_data or {}).get("new_secret") or (self.session_data or {}).get("secret") or self.secret)
         return data
 
 
@@ -187,6 +200,7 @@ class ChangePasswordJobManager:
             _sse_mux.publish("change_password", event)
 
     def _broadcast_job(self, job: ChangePasswordJob) -> None:
+        save_email_job(self, job)
         self._broadcast({"type": "job", "job": job.to_dict()})
 
     def _job_log(self, job: ChangePasswordJob, msg: str) -> None:
@@ -236,7 +250,13 @@ class ChangePasswordJobManager:
         check_plan_only: bool = False,
         skip_password_change: bool = False,
         change_2fa_only: bool = False,
+        change_email_only: bool = False,
+        congas_mailboxes: str = "",
     ) -> list[ChangePasswordJob]:
+        if sum((check_plan_only, skip_password_change, change_2fa_only, change_email_only)) > 1:
+            raise ValueError("Cac tuy chon mode khong duoc bat dong thoi")
+        if change_email_only:
+            return add_email_jobs(self, lines, congas_mailboxes)
         existing = {
             job.email.lower()
             for job in self.jobs.values()
@@ -354,6 +374,9 @@ class ChangePasswordJobManager:
         for job_id in list(self.order):
             job = self.jobs.get(job_id)
             if job and job.status in ("success", "error", "cancelled"):
+                if job.change_email_only and job.status != "success" and job.email_change_stage in PENDING:
+                    continue
+                delete_email_job(self, job)
                 self.jobs.pop(job_id, None)
                 self.order.remove(job_id)
                 self._tasks.pop(job_id, None)
@@ -366,6 +389,10 @@ class ChangePasswordJobManager:
         job = self.jobs.get(job_id)
         if job is None:
             return False
+        if job.change_email_only and (job.status in {"queued", "running"} or
+                                     (job.status != "success" and job.email_change_stage in PENDING)):
+            return False
+        delete_email_job(self, job)
         task = self._tasks.get(job_id)
         if task and not task.done():
             task.cancel()
@@ -378,7 +405,7 @@ class ChangePasswordJobManager:
 
     async def retry_job(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
-        if job is None or job.status == "running":
+        if job is None or job.status == "running" or (job.change_email_only and job.status in {"queued", "success"}):
             return False
         task = self._tasks.get(job_id)
         if task and not task.done():
@@ -439,23 +466,26 @@ class ChangePasswordJobManager:
             if job.new_password and not job.check_plan_only and not job.skip_password_change and not job.change_2fa_only:
                 self._job_log(job, "[chpwd] new password prepared")
 
-            result = await asyncio.wait_for(
-                change_password(
-                    email=job.email,
-                    current_password=job.current_password,
-                    new_password=job.new_password or "",
-                    check_plan_only=job.check_plan_only,
-                    skip_password_change=job.skip_password_change,
-                    change_2fa_only=job.change_2fa_only,
-                    secret=job.secret,
-                    initial_session=job.initial_session,
-                    proxy=proxy,
-                    log=lambda msg: self._job_log(job, msg),
-                ),
-                timeout=self._job_timeout,
-            )
+            if job.change_email_only:
+                result = await run_email_job(self, job, proxy)
+            else:
+                result = await asyncio.wait_for(
+                    change_password(
+                        email=job.email,
+                        current_password=job.current_password,
+                        new_password=job.new_password or "",
+                        check_plan_only=job.check_plan_only,
+                        skip_password_change=job.skip_password_change,
+                        change_2fa_only=job.change_2fa_only,
+                        secret=job.secret,
+                        initial_session=job.initial_session,
+                        proxy=proxy,
+                        log=lambda msg: self._job_log(job, msg),
+                    ),
+                    timeout=self._job_timeout,
+                )
             job.session_data = result
-            if result.get("new_secret"):
+            if not job.change_email_only and result.get("new_secret"):
                 job.secret = result.get("new_secret")
             job.status = "success"
             job.finished_at = time.time()
@@ -503,4 +533,5 @@ def get_change_password_manager() -> ChangePasswordJobManager:
     global _change_password_manager
     if _change_password_manager is None:
         _change_password_manager = ChangePasswordJobManager(max_concurrent=1)
+        recover_email_jobs(_change_password_manager)
     return _change_password_manager

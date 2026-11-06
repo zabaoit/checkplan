@@ -1096,6 +1096,8 @@ class AddChangePasswordJobsRequest(BaseModel):
     check_plan_only: bool = Field(default=False)
     skip_password_change: bool = Field(default=False)
     change_2fa_only: bool = Field(default=False)
+    change_email_only: bool = Field(default=False)
+    congas_mailboxes: str = Field(default="", max_length=100000)
 
 
 class SetChangePasswordConfigRequest(BaseModel):
@@ -1134,17 +1136,22 @@ async def get_change_password_job_log(job_id: str) -> JSONResponse:
 
 @app.post("/api/change-password/jobs")
 async def add_change_password_jobs(payload: AddChangePasswordJobsRequest) -> JSONResponse:
-    modes_active = sum([bool(payload.check_plan_only), bool(payload.skip_password_change), bool(payload.change_2fa_only)])
+    modes_active = sum([bool(payload.check_plan_only), bool(payload.skip_password_change), bool(payload.change_2fa_only), bool(payload.change_email_only)])
     if modes_active > 1:
         raise HTTPException(400, "Cac tuy chon mode khong duoc bat dong thoi")
     cm = get_change_password_manager()
-    jobs = cm.add_jobs(
-        payload.combos.splitlines(),
-        new_password=payload.new_password,
-        check_plan_only=payload.check_plan_only,
-        skip_password_change=payload.skip_password_change,
-        change_2fa_only=payload.change_2fa_only,
-    )
+    try:
+        jobs = cm.add_jobs(
+            payload.combos.splitlines(),
+            new_password=payload.new_password,
+            check_plan_only=payload.check_plan_only,
+            skip_password_change=payload.skip_password_change,
+            change_2fa_only=payload.change_2fa_only,
+            change_email_only=payload.change_email_only,
+            congas_mailboxes=payload.congas_mailboxes,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     return JSONResponse({"added": len(jobs), "jobs": [job.to_dict() for job in jobs]})
 
 

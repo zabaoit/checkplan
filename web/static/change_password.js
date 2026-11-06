@@ -28,6 +28,8 @@
     comboInput: $('chpwd-combo-input'),
     newPassword: $('chpwd-new-password'),
     mode: $('chpwd-mode'),
+    congasInput: $('chpwd-congas-input'),
+    congasPanel: $('chpwd-congas-panel'),
     jobTimeout: $('chpwd-job-timeout'),
     proxyToggle: $('chpwd-proxy-toggle'),
     btnRun: $('chpwd-btn-run'),
@@ -227,7 +229,9 @@
           <div class="job-main">
             <div class="job-email" title="${escHtml(job.email)}">
               <span class="job-email-text">${escHtml(job.email)}</span>
+              ${job.mode === 'change_email' && job.target_email ? `<span class="muted">Email mới: ${escHtml(job.target_email)}</span>` : ''}
             </div>
+            ${job.mode === 'change_email' && job.email_change_stage ? `<div class="muted">${escHtml(({ prepared: 'Đã xác thực nguồn', submitted: 'Đã gửi · chờ xác minh', changed_pending_verify: 'Đã đổi mail · chờ đăng nhập lại', verified: 'Đã xác minh mail mới' })[job.email_change_stage] || job.email_change_stage)}</div>` : ''}
             ${badgesRow}
           </div>
           <div class="job-duration">${escHtml(fmtDuration(job.duration))}</div>
@@ -269,14 +273,16 @@
       const isSuccess = job.status === 'success';
       const isNoOffer = String(job.error || '').toUpperCase().includes('KHÔNG CÓ OFFER') || String(job.plan || '').toUpperCase().includes('KHÔNG CÓ OFFER');
 
-      if (isSuccess || isNoOffer) {
+      if (isSuccess || (isNoOffer && job.mode !== 'change_email')) {
         const detail = detailCache.get(id);
         if (!detail) {
           pendingLoads.push(detailFor(id).then(() => renderOutputs()).catch(() => {}));
           continue;
         }
         let line = '';
-        if (job.mode === 'change_2fa' || (!detail.new_password && detail.secret)) {
+        if (job.mode === 'change_email') {
+          line = `${detail.target_email || job.target_email || ''}|${detail.current_password || job.current_password || ''}|${detail.secret || ''}`;
+        } else if (job.mode === 'change_2fa' || (!detail.new_password && detail.secret)) {
           const pw = detail.current_password || job.current_password || '';
           line = `${job.email}|${pw}|${detail.secret || ''}`;
         } else if (detail.new_password) {
@@ -459,7 +465,11 @@
 
   dom.comboInput.addEventListener('input', () => {
     updateComboCount();
-    window.GptUi.persistTextarea(LS_INPUT, dom.comboInput.value);
+    if (dom.mode.value !== 'change_email' && !dom.comboInput.value.split(/\r?\n/).some(line => line.split('|').length > 3)) {
+      window.GptUi.persistTextarea(LS_INPUT, dom.comboInput.value);
+    } else {
+      window.GptUi.clearPersistedTextarea(LS_INPUT);
+    }
   });
 
   $('chpwd-btn-sort-input').addEventListener('click', () => {
@@ -474,19 +484,33 @@
   });
 
   dom.btnRun.addEventListener('click', async () => {
-    const combos = dom.comboInput.value.trim();
-    if (!combos) {
+    const mode = dom.mode.value;
+    const combos = mode === 'change_email' ? dom.comboInput.value : dom.comboInput.value.trim();
+    if (!combos.trim()) {
       await Dialog.alert({ message: 'Paste accounts first.' });
       return;
     }
-    const mode = dom.mode.value;
+    const congasMailboxes = mode === 'change_email' ? dom.congasInput.value : '';
+    if (mode === 'change_email' && !congasMailboxes.trim()) {
+      await Dialog.alert({ message: 'Nhập ít nhất một mailbox Congas: email|token.' });
+      return;
+    }
     const body = {
       combos,
-      new_password: dom.newPassword.value.trim() || null,
+      new_password: mode === 'change_email' ? null : dom.newPassword.value.trim() || null,
       check_plan_only: mode === 'check_plan',
       skip_password_change: mode === 'session_only',
       change_2fa_only: mode === 'change_2fa',
+      change_email_only: mode === 'change_email',
+      congas_mailboxes: congasMailboxes,
     };
+    if (mode === 'change_email') {
+      const ok = await Dialog.confirm({
+        message: 'Đổi mail bằng alias +3 ký tự a-z0-9, mailbox Congas quay vòng đến đủ GPT. Giữ mật khẩu và 2FA cũ; đăng xuất rồi đăng nhập email mới để xác minh.',
+        confirmLabel: 'Change mail', cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+    }
     if (mode === 'change_password' && !body.new_password) {
       const ok = await Dialog.confirm({
         message: 'New password is blank. The app will generate a random password for each account.',
@@ -533,8 +557,16 @@
     });
   }
 
+  dom.mode.addEventListener('change', () => {
+    const mail = dom.mode.value === 'change_email';
+    dom.congasPanel.hidden = !mail;
+    dom.newPassword.disabled = mail;
+    if (mail) window.GptUi.clearPersistedTextarea(LS_INPUT);
+  });
+
   dom.btnClearInput.addEventListener('click', () => {
     dom.comboInput.value = '';
+    dom.congasInput.value = '';
     updateComboCount();
     window.GptUi.clearPersistedTextarea(LS_INPUT);
   });
@@ -608,7 +640,7 @@
     const successJobIds = [];
     for (const id of state.order) {
       const job = state.jobs.get(id);
-      if (job && (job.status === 'success' || String(job.error || '').toUpperCase().includes('KHÔNG CÓ OFFER'))) {
+      if (job && (job.status === 'success' || (job.mode !== 'change_email' && String(job.error || '').toUpperCase().includes('KHÔNG CÓ OFFER')))) {
         successJobIds.push(id);
       }
     }
@@ -623,7 +655,7 @@
       const csvRows = [];
       csvRows.push(['Email', 'Current Password', 'New Password', '2FA Secret', 'Plan'].map(v => `"${v.replace(/"/g, '""')}"`).join(','));
       for (const d of details) {
-        const email = d.email || '';
+        const email = d.mode === 'change_email' ? d.target_email || '' : d.email || '';
         const currentPassword = d.current_password || '';
         const newPassword = d.new_password || '';
         const secret = d.secret || '';

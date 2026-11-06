@@ -222,6 +222,13 @@
       <span class="muted card-head-note">email|current_password|2fa_secret|session_json</span>
     </header>
     <textarea class="combo-textarea" id="chpwd-combo-input" placeholder="email@example.com|currentPassword|TOTP_SECRET&#10;email2@example.com|currentPassword2|TOTP_SECRET|{&quot;sessionToken&quot;:&quot;...&quot;}"></textarea>
+    <div id="chpwd-congas-panel" hidden>
+      <label class="input-group" for="chpwd-congas-input">
+        <span class="input-label">Congas mailboxes · email|token</span>
+        <textarea class="combo-textarea" id="chpwd-congas-input" rows="3" spellcheck="false" autocomplete="off" placeholder="abc@gmail.com|token" aria-describedby="chpwd-congas-hint"></textarea>
+      </label>
+      <p class="muted" id="chpwd-congas-hint">Mỗi GPT dùng alias +3 ký tự a-z0-9. Mailbox dùng lần lượt, quay vòng đến đủ GPT; không cần cùng số dòng. Giữ mật khẩu và 2FA cũ, đăng xuất rồi đăng nhập email mới để xác minh. Session/key không lưu bản nháp.</p>
+    </div>
     <div class="card-settings">
       <div class="card-settings-row card-settings-row-mixed">
         <label class="input-group config-field-long">
@@ -233,6 +240,7 @@
           <select id="chpwd-mode">
             <option value="change_password">Change password</option>
             <option value="change_2fa">Change 2FA (New 2FA)</option>
+            <option value="change_email">Change mail</option>
             <option value="session_only">Get session only</option>
             <option value="check_plan">Check plan only</option>
           </select>

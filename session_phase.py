@@ -1102,10 +1102,99 @@ async def get_session_pure_request(
                         f"unexpected login state: page_type={page_type!r} landing={landing[:80]!r}"
                     )
 
+        pw_verified_data: dict[str, Any] | None = None
+        if flow == "otp" and mail_provider is None and bool(password and password.strip()):
+            from urllib.parse import urlencode as _urlencode_pw
+
+            log("[session-req] landed on /email-verification with password -> retrying /log-in/password (screen_hint=login)...")
+            for pw_attempt in range(1, 3):
+                if pw_attempt > 1:
+                    time.sleep(1.5)
+                try:
+                    session.close()
+                except Exception:
+                    pass
+                imp = _IMPERSONATE_CANDIDATES[(pw_attempt - 1) % len(_IMPERSONATE_CANDIDATES)]
+                session = _create_session(proxy=proxy, impersonate=imp)
+                try:
+                    did = str(__import__("uuid").uuid4())
+                    csrf = _step_csrf(session, log)
+                    signin_headers = _common_headers("https://chatgpt.com/auth/login")
+                    signin_headers["Content-Type"] = "application/x-www-form-urlencoded"
+                    signin_params = {
+                        "prompt": "login",
+                        "ext-passkey-client-capabilities": "01001",
+                        "screen_hint": "login",
+                        "ext-oai-did": did,
+                        "login_hint": email,
+                    }
+                    signin_resp = session.post(
+                        "https://chatgpt.com/api/auth/signin/openai?" + _urlencode_pw(signin_params),
+                        headers=signin_headers,
+                        data={"csrfToken": csrf, "callbackUrl": "https://chatgpt.com/", "json": "true"},
+                        timeout=30,
+                    )
+                    if signin_resp.status_code == 200:
+                        au = (signin_resp.json() or {}).get("url", "")
+                        if "auth.openai.com" in au:
+                            r_pw = _navigate_oauth_authorize(session, au, log)
+                            landing = str(getattr(r_pw, "url", "") or au)
+                            device_id = _get_cookie_safe(session, "oai-did") or did
+                            auth_url = au
+                            log(f"[session-req] screen_hint=login attempt {pw_attempt}/2 landing: {landing[:90]!r}")
+                            if _detect_flow_from_landing(landing) == "password":
+                                flow = "password"
+                                break
+                except Exception as boot_exc:
+                    log(f"[session-req] screen_hint=login attempt {pw_attempt}/2 error: {boot_exc}")
+
+            if flow == "otp":
+                try:
+                    pw_page = session.get(
+                        "https://auth.openai.com/log-in/password",
+                        headers=_common_headers(landing or "https://auth.openai.com/email-verification"),
+                        allow_redirects=False,
+                        timeout=30,
+                    )
+                    if pw_page.status_code == 200:
+                        pw_headers = _common_headers("https://auth.openai.com/log-in/password")
+                        pw_headers["Content-Type"] = "application/json"
+                        if device_id:
+                            pw_headers["oai-device-id"] = device_id
+                        sentinel_pw = _get_sentinel_token(session, device_id, "login", log)
+                        if sentinel_pw:
+                            pw_headers["openai-sentinel-token"] = sentinel_pw
+                        pw_resp = session.post(
+                            "https://auth.openai.com/api/accounts/password/verify",
+                            headers=pw_headers,
+                            json={"password": password},
+                            timeout=30,
+                        )
+                        if pw_resp.status_code == 200:
+                            log("[session-req] password verified (direct /log-in/password fallback)")
+                            pw_verified_data = pw_resp.json() or {}
+                            flow = "password_done"
+                        elif pw_resp.status_code == 401:
+                            body = (pw_resp.text or "")[:300]
+                            raise SessionError(f"password verify failed: HTTP 401 - {body}")
+                except SessionError:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+                    raise
+                except Exception as pw_exc:
+                    log(f"[session-req] direct /log-in/password probe note: {pw_exc}")
+
         try:
 
+            mfa_verified = False
+            if flow == "password_done" and pw_verified_data is not None:
+                page_type = ((pw_verified_data.get("page") or {}).get("type") or "").strip()
+                continue_url = (pw_verified_data.get("continue_url") or "").strip()
+                log(f"[session-req] post-password -> page_type={page_type!r} continue_url={continue_url[:80]!r}")
             # ── Branch A: password login ──
-            if flow == "password":
+            elif flow == "password":
                 log("[session-req] password login flow...")
                 headers = _common_headers("https://auth.openai.com/log-in/password")
                 headers["Content-Type"] = "application/json"
@@ -1128,7 +1217,7 @@ async def get_session_pure_request(
                 pw_data = resp.json() if resp is not None else {}
                 page_type = ((pw_data.get("page") or {}).get("type") or "").strip()
                 continue_url = (pw_data.get("continue_url") or "").strip()
-                log(f"[session-req] post-password → page_type={page_type!r} continue_url={continue_url[:80]!r}")
+                log(f"[session-req] post-password -> page_type={page_type!r} continue_url={continue_url[:80]!r}")
 
             # ── Branch B: passwordless OTP login ──
             elif flow == "otp":
@@ -1210,6 +1299,7 @@ async def get_session_pure_request(
                     raise SessionError(f"MFA verify failed: HTTP {resp.status_code} - {body}")
 
                 mfa_data = resp.json() if resp is not None else {}
+                mfa_verified = True
                 log("[session-req] MFA verified!")
                 continue_url = (mfa_data.get("continue_url") or "").strip()
 
@@ -1394,6 +1484,7 @@ async def get_session_pure_request(
                 session_data["__cookies"] = cookies_export
             except Exception as exc:
                 log(f"[session-req] cookie export failed: {exc}")
+            session_data["__mfa_verified"] = mfa_verified
             return session_data
         finally:
             try:
